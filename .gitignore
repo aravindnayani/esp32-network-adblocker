@@ -17,3 +17,6 @@ src/secrets.h
 
 # Backups / scratch
 *.bak
+
+# Flasher images are built by CI (flasher.yml); never commit them
+docs/*.bin

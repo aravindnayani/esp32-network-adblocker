@@ -78,6 +78,13 @@ String updateStatus = "never";
 Preferences prefs;
 DNSServer   dnsPortal;
 String      portalOpts;             // <option> list of scanned networks, built once at portal start
+// The portal's AP is open, and a configured device also lands in it whenever WiFi fails at
+// boot (router reboot, power cut, or someone jamming it). Unless BOOT was held at power-on,
+// saving there needs the current admin password: otherwise anyone in radio range could
+// point the device at their own AP and set an admin password of their choosing.
+bool        portalRecovery = false; // BOOT held at power-on: physical access, no password needed
+uint8_t     portalFails = 0;        // wrong current-password attempts since boot
+static const uint8_t PORTAL_MAX_FAILS = 5;
 
 // Admin auth. Prebuilt (web-flasher) images only have the placeholder secrets.h, whose
 // passwords are public, so the real ones are set in the setup portal and kept in NVS.
@@ -1011,7 +1018,19 @@ static bool connectWiFi() {
   return WiFi.status() == WL_CONNECTED;
 }
 
+static bool portalNeedsPass() { return adminPass.length() && !portalRecovery; }
+static bool sameSecret(const String& a, const String& b) {   // no early exit on the first mismatch
+  uint8_t d = a.length() != b.length();
+  for (size_t i = 0; i < a.length(); i++) d |= (uint8_t)a[i] ^ (uint8_t)(i < b.length() ? b[i] : 0);
+  return d == 0;
+}
+
 static void handlePortalRoot() {
+  String cur = portalNeedsPass()
+    ? String("<p style='color:#8b949e;margin:18px 0 0'>Current dashboard admin password (forgot it? hold <b>BOOT</b> while powering on):</p>"
+             "<input name=c type=password required autocomplete=current-password placeholder='Current admin password' "
+             "style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>")
+    : String("");
   String html =
     "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>C3 AdBlock setup</title>"
@@ -1021,10 +1040,11 @@ static void handlePortalRoot() {
     "<form method=POST action=/wifisave>"
     "<input list=nets name=s placeholder='WiFi name' required style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>"
     "<datalist id=nets>" + portalOpts + "</datalist>"
-    "<input name=p type=password placeholder='Password' style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>"
+    "<input name=p type=password placeholder='Password' style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>" +
+    cur +
     "<p style='color:#8b949e;margin:18px 0 0'>" +
     (adminPass.length()
-      ? String("Dashboard admin password (leave blank to keep the current one):")
+      ? String("New dashboard admin password (leave blank to keep the current one):")
       : "Choose a dashboard admin password (8+ characters). It protects firmware updates and settings; user name is <b>" + htmlEscape(WEB_USER) + "</b>.") +
     "</p><input name=a type=password minlength=8 " + String(adminPass.length() ? "" : "required ") +
     "autocomplete=new-password placeholder='Admin password' style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>"
@@ -1035,6 +1055,19 @@ static void handlePortalRoot() {
 static void handleWifiSave() {
   String ss = web.arg("s"), pw = web.arg("p"), ap = web.arg("a");
   if (!ss.length()) { web.send(400, "text/plain", "missing WiFi name"); return; }
+  if (portalNeedsPass()) {
+    if (portalFails >= PORTAL_MAX_FAILS) {
+      web.send(429, "text/plain", "too many wrong passwords: power-cycle the device, or hold BOOT while powering on to reset it");
+      return;
+    }
+    if (!sameSecret(web.arg("c"), adminPass)) {
+      portalFails++;
+      Serial.printf("[setup] wrong current admin password (%u/%u)\n", portalFails, PORTAL_MAX_FAILS);
+      delay(1000);
+      web.send(403, "text/plain", "wrong current admin password");
+      return;
+    }
+  }
   if (ap.length() ? ap.length() < MIN_ADMIN_PASS : !adminPass.length()) {
     web.send(400, "text/plain", "admin password must be at least 8 characters"); return;
   }
@@ -1095,7 +1128,7 @@ void setup() {
     if (digitalRead(BOOT_PIN) == LOW) {
       prefs.begin("wifi", false); prefs.clear(); prefs.end();
       prefs.begin("auth", false); prefs.clear(); prefs.end();   // also turns physical confirmation back on
-      forcePortal = true;
+      forcePortal = portalRecovery = true;
       Serial.println("[setup] BOOT held -> cleared saved WiFi + admin password"); } }
   loadAuth(); loadPhys();
 

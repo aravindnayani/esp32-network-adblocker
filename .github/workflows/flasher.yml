@@ -61,6 +61,16 @@ jobs:
           mkdir -p "$out"
           cp docs/index.html "$out/"
           touch "$out/.nojekyll"
+          # ESP Web Tools, pinned and hash-checked (npm's published integrity for this
+          # version). To upgrade: bump the version and paste the new
+          # `npm view esp-web-tools@<v> dist.integrity` value.
+          ewt_ver=10.4.0
+          ewt_sri=sha512-3pwkeFFm5Fj7UQo8SJNYK5RXrtNCpq6X9QoI6bMT4GBZWgrJqjn0YvM9ihG74BtMoSFYXfmDtkehuxe50PTMPQ==
+          curl -fsSL -o ewt.tgz "https://registry.npmjs.org/esp-web-tools/-/esp-web-tools-$ewt_ver.tgz"
+          test "sha512-$(openssl dgst -sha512 -binary ewt.tgz | base64 -w0)" = "$ewt_sri" \
+            || { echo "esp-web-tools $ewt_ver tarball does not match its pinned hash"; exit 1; }
+          mkdir ewt && tar xzf ewt.tgz -C ewt
+          cp -r ewt/package/dist/web "$out/esp-web-tools"
           cp "$b/bootloader.bin" "$b/partitions.bin" "$b/firmware.bin" "$b/littlefs.bin" "$out/"
           cp ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin "$out/"
           version="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
@@ -78,6 +88,9 @@ jobs:
           off() { echo $(( $(awk -F, -v n="$1" '$1 ~ "^"n" *$" {gsub(/ /,"",$4); print $4}' partitions.csv) )); }
           test "$(jq '.builds[0].parts[] | select(.path=="firmware.bin").offset' site/manifest.json)" -eq "$(off app0)"
           test "$(jq '.builds[0].parts[] | select(.path=="littlefs.bin").offset' site/manifest.json)" -eq "$(off spiffs)"
+          # The page must load the self-hosted installer, never a CDN copy.
+          test -f site/esp-web-tools/install-button.js
+          if grep -qE '<script[^>]+src="https?://' site/index.html; then echo "index.html loads a remote script"; exit 1; fi
 
       - uses: actions/upload-pages-artifact@v3
         with:

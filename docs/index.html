@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>C3 AdBlocker — flash it in your browser</title>
 <meta name="description" content="Flash the $2 ESP32-C3 network ad-blocker straight from your browser. No toolchain, no PlatformIO.">
-<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<!-- ESP Web Tools is served from this site, not a CDN: flasher.yml fetches one pinned
+     release, checks its sha512 against npm, and copies it in. A floating CDN import would
+     let whoever controls that package decide what firmware lands on visitors' boards. -->
+<script type="module" src="./esp-web-tools/install-button.js"></script>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
