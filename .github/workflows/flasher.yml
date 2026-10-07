@@ -1,0 +1,94 @@
+name: flasher
+
+# Builds the browser-flasher images (docs/index.html + manifest.json) from the current
+# source and deploys them to GitHub Pages. The .bin files used to be committed by hand
+# and went stale: the published firmware predated the dashboard auth entirely.
+#
+# One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "platformio.ini"
+      - "partitions.csv"
+      - "docs/**"
+      - "tools/build_blocklist.py"
+      - ".github/workflows/flasher.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - run: pip install -U platformio
+
+      # Placeholder secrets on purpose: prebuilt images must not carry anyone's WiFi or
+      # passwords. The firmware ignores the placeholder passwords, so the admin password
+      # is chosen in the setup portal.
+      - name: Placeholder secrets
+        run: cp src/secrets.example.h src/secrets.h
+
+      - name: Build bundled blocklist
+        run: python3 tools/build_blocklist.py data/blocklist.bin
+
+      - name: Build firmware + LittleFS image
+        run: |
+          pio run -e c3
+          pio run -e c3 -t buildfs
+
+      - name: Assemble site
+        run: |
+          set -euo pipefail
+          out=site; b=.pio/build/c3
+          mkdir -p "$out"
+          cp docs/index.html "$out/"
+          touch "$out/.nojekyll"
+          cp "$b/bootloader.bin" "$b/partitions.bin" "$b/firmware.bin" "$b/littlefs.bin" "$out/"
+          cp ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin "$out/"
+          version="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
+          jq --arg v "$version" '.version = $v' docs/manifest.json > "$out/manifest.json"
+          ls -l "$out"
+
+      - name: Sanity checks
+        run: |
+          set -euo pipefail
+          # Guard against ever shipping an unauthenticated build again.
+          for s in "missing CSRF header" "bad Host header" "no admin password set" "too many wrong passwords" "press the BOOT button"; do
+            grep -q "$s" site/firmware.bin || { echo "firmware.bin lacks '$s'"; exit 1; }
+          done
+          # Manifest offsets must match partitions.csv.
+          off() { echo $(( $(awk -F, -v n="$1" '$1 ~ "^"n" *$" {gsub(/ /,"",$4); print $4}' partitions.csv) )); }
+          test "$(jq '.builds[0].parts[] | select(.path=="firmware.bin").offset' site/manifest.json)" -eq "$(off app0)"
+          test "$(jq '.builds[0].parts[] | select(.path=="littlefs.bin").offset' site/manifest.json)" -eq "$(off spiffs)"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
