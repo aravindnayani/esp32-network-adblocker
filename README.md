@@ -485,8 +485,8 @@ reach the dashboard through another DNS name, use the IP instead.
 **Verified blocklist downloads.** Remote updates are https-only, and the server
 certificate (and hostname) is checked against a small built-in set of root CAs: Let's
 Encrypt, Sectigo/USERTrust, DigiCert, Google Trust Services, GlobalSign, and Amazon. That
-covers GitHub and most HTTPS hosts; the full Mozilla set doesn't fit next to two firmware
-slots. Before this, anyone on the network path could serve the device a list that blocks
+covers GitHub, Quad9's DNS-over-TLS certificate and most HTTPS hosts. The full Mozilla set
+(~63 KB) would fit, but a short list keeps the firmware smaller and trusts far fewer CAs. Before this, anyone on the network path could serve the device a list that blocks
 nothing, or one that blocks sites of their choosing. To trust another CA, add it to
 `ROOTS` in `tools/gen_ca_bundle.py`, then run `pip install certifi` and
 `python3 tools/gen_ca_bundle.py` to regenerate `src/ca_bundle.h`. Certificate dates

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate src/ca_bundle.h: a small root-CA bundle for verifying HTTPS blocklist downloads.
 
-The framework ships Mozilla's full bundle (~63 KB), which doesn't fit the ~75 KB left in
-the dual-OTA app slot. This picks the roots behind GitHub's download hosts plus the other
-big public CAs (Let's Encrypt, Sectigo, DigiCert, Google, GlobalSign, Amazon), so most
+The framework ships Mozilla's full bundle (~63 KB). It would fit in today's app slot, but a
+short list keeps the firmware smaller and trusts far fewer CAs. This picks the roots behind
+GitHub's download hosts and Quad9's DNS-over-TLS certificate, plus the other big public CAs (Let's Encrypt, Sectigo, DigiCert, Google, GlobalSign, Amazon), so most
 HTTPS hosts work, and writes them in the format WiFiClientSecure::setCACertBundle() reads
 (same as ESP-IDF's gen_crt_bundle.py):
 
@@ -24,7 +24,7 @@ ROOTS = [
     'USERTrust ECC Certification Authority',
     'Sectigo Public Server Authentication Root R46',
     'Sectigo Public Server Authentication Root E46',
-    'DigiCert Global Root G2', 'DigiCert Global Root G3',
+    'DigiCert Global Root G2', 'DigiCert Global Root G3',        # G3: Quad9 DNS-over-TLS (dns.quad9.net)
     'GTS Root R1', 'GTS Root R3', 'GTS Root R4',                  # Google / Cloudflare
     'GlobalSign Root CA - R3', 'GlobalSign Root R46', 'GlobalSign Root E46',
     'Amazon Root CA 1', 'Amazon Root CA 3',                       # S3 / CloudFront
