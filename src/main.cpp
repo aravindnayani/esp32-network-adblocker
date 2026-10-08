@@ -418,16 +418,16 @@ static Dev* getClient(uint32_t ip) {
 // has to guess port and txid together. A reply is only accepted on the socket its query
 // left from. The pool is small because lwIP allows 16 sockets in total (web server, OTA,
 // HTTPS fetch need theirs) and each queues just 6 datagrams.
-static const uint32_t UPSTREAM_TIMEOUT_MS = 2500;   // then drop it; the client retries
+static int hwRng(void*, unsigned char* b, size_t n) { esp_fill_random(b, n); return 0; }
+#define STR_(x) #x
+#define STR(x) STR_(x)
 static const int MAX_PENDING = 32;
 struct Pending {
   bool used; uint32_t cip; uint16_t cport; uint8_t cid0, cid1;
   uint16_t wid; uint16_t qlen; uint32_t qhash; uint32_t sentAt; uint8_t sock;
+  uint16_t maxLen;                                      // largest reply the client takes over UDP
 };
 static Pending pending[MAX_PENDING];
-static const int UP_SOCKS = 4;
-struct UpSock { int fd; uint8_t inFlight; bool dirty; };   // dirty = used since its port was chosen
-static UpSock ups[UP_SOCKS];
 static int dnsSock = -1;
 static uint8_t dbuf[1536];   // DNS task only; fits any non-fragmented UDP reply (EDNS answers can exceed 512)
 
@@ -442,24 +442,6 @@ static int udpSocket(uint16_t port) {
   if (bind(s, (sockaddr*)&a, sizeof(a)) < 0) { close(s); return -1; }
   fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
   return s;
-}
-static int randomPortSocket() {
-  for (int tries = 0; tries < 8; tries++) {             // a port in use just means pick another
-    int s = udpSocket(1024 + esp_random() % (65536 - 1024));
-    if (s >= 0) return s;
-  }
-  return -1;
-}
-// Re-bind every idle, used socket to a new random port. A late reply to the old port just
-// gets ICMP port-unreachable, the same as an expired query. A socket that can't be reopened
-// (lwIP out of sockets) stays closed and is retried on the next pass.
-static void rotateUpstreamPorts() {
-  for (int i = 0; i < UP_SOCKS; i++) {
-    UpSock& u = ups[i];
-    if (u.fd >= 0 && (u.inFlight || !u.dirty)) continue;
-    if (u.fd >= 0) close(u.fd);
-    u.fd = randomPortSocket(); u.dirty = false;
-  }
 }
 static void sendTo(int sock, uint32_t ip, uint16_t port, const uint8_t* p, int n) {
   sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = ip;
@@ -485,16 +467,287 @@ static int buildServfail(uint8_t* p, int qend) {     // question echoed, no answ
   p[2] = 0x81; p[3] = 0x82; p[6] = 0; p[7] = 0; p[8] = 0; p[9] = 0; p[10] = 0; p[11] = 0;
   return qend;
 }
-// Returns false if the table is full (caller answers SERVFAIL so the client moves on).
-static bool forwardUpstream(uint32_t cip, uint16_t cport, int qlen, int qend) {
-  int slot = -1;
-  for (int i = 0; i < MAX_PENDING; i++) if (!pending[i].used) { slot = i; break; }
-  if (slot < 0) return false;
-  int k = -1, start = esp_random() % UP_SOCKS;         // random open socket, least loaded
+// Largest reply the client can take over UDP: 512, or the EDNS buffer size (RFC 6891) of
+// an OPT record right after the question.
+static uint16_t clientMaxLen(const uint8_t* p, int len, int qend) {
+  bool onlyAdditional = !p[6] && !p[7] && !p[8] && !p[9] && (p[10] || p[11]);
+  if (onlyAdditional && qend + 11 <= len && p[qend] == 0 && p[qend + 1] == 0 && p[qend + 2] == 41) {
+    uint16_t sz = (p[qend + 3] << 8) | p[qend + 4];
+    return sz < 512 ? 512 : sz > sizeof(dbuf) ? sizeof(dbuf) : sz;
+  }
+  return 512;
+}
+static void finishPending(Pending& q);
+// Match an upstream reply to the query it answers (txid, question, and the socket it went
+// out on) and relay it with the client's own txid. n is the reply's full length; only the
+// first sizeof(dbuf) bytes need to be in m. A reply bigger than the client takes over UDP
+// goes back as just the question with TC set, as an upstream UDP server would truncate it.
+static void relayReply(uint8_t* m, int n, int sock) {
+  if (n < 12) return;
+  uint16_t wid = (m[0] << 8) | m[1];
+  for (int i = 0; i < MAX_PENDING; i++) {
+    Pending& q = pending[i];
+    if (!q.used || q.wid != wid || q.sock != sock) continue;
+    if (n < 12 + q.qlen || fnv32(m + 12, q.qlen) != q.qhash) break;   // not our question
+    m[0] = q.cid0; m[1] = q.cid1;
+    if (n > q.maxLen) { m[2] |= 0x02; memset(m + 4, 0, 8); m[5] = q.qlen ? 1 : 0; n = 12 + q.qlen; }
+    sendTo(dnsSock, q.cip, q.cport, m, n);
+    finishPending(q);
+    break;
+  }
+}
+
+#ifdef UPSTREAM_PLAIN
+// ---- plain UDP upstream (opt-in: -DUPSTREAM_PLAIN, for networks that block port 853) ----
+// Issue #10 still holds: a reply is only relayed if its txid, question section and source
+// address/port match a query we sent, and the client's own txid is restored.
+//
+// Source ports are randomized too. With one fixed port for the device's lifetime, a forged
+// reply only had to guess the 16-bit txid. Now upstream queries go out on a small pool of
+// sockets, each bound to a random port and re-bound to a new one whenever it has nothing
+// in flight. At home-network load that's a fresh port for nearly every query, so a forger
+// has to guess port and txid together. A reply is only accepted on the socket its query
+// left from. The pool is small because lwIP allows 16 sockets in total (web server, OTA,
+// HTTPS fetch need theirs) and each queues just 6 datagrams.
+static const uint32_t UPSTREAM_TIMEOUT_MS = 2500;   // then drop it; the client retries
+const char* volatile upstreamStatus = "UNENCRYPTED: plain UDP upstream (built with UPSTREAM_PLAIN)";
+static const int UP_SOCKS = 4;
+struct UpSock { int fd; uint8_t inFlight; bool dirty; };   // dirty = used since its port was chosen
+static UpSock ups[UP_SOCKS];
+static int randomPortSocket() {
+  for (int tries = 0; tries < 8; tries++) {             // a port in use just means pick another
+    int s = udpSocket(1024 + esp_random() % (65536 - 1024));
+    if (s >= 0) return s;
+  }
+  return -1;
+}
+// Re-bind every idle, used socket to a new random port. A late reply to the old port just
+// gets ICMP port-unreachable, the same as an expired query. A socket that can't be reopened
+// (lwIP out of sockets) stays closed and is retried on the next pass.
+static void rotateUpstreamPorts() {
+  for (int i = 0; i < UP_SOCKS; i++) {
+    UpSock& u = ups[i];
+    if (u.fd >= 0 && (u.inFlight || !u.dirty)) continue;
+    if (u.fd >= 0) close(u.fd);
+    u.fd = randomPortSocket(); u.dirty = false;
+  }
+}
+static int upstreamPick(int) {                          // random open socket, least loaded
+  int k = -1, start = esp_random() % UP_SOCKS;
   for (int j = 0; j < UP_SOCKS; j++) {
     int i = (start + j) % UP_SOCKS;
     if (ups[i].fd >= 0 && (k < 0 || ups[i].inFlight < ups[k].inFlight)) k = i;
   }
+  return k;
+}
+static void upstreamSend(int k, int qlen) {
+  ups[k].inFlight++; ups[k].dirty = true;
+  sendTo(ups[k].fd, (uint32_t)UPSTREAM, UPSTREAM_PORT, dbuf, qlen);
+}
+static void finishPending(Pending& q) { q.used = false; if (ups[q.sock].inFlight) ups[q.sock].inFlight--; }
+static void handleUpstreamReplies(int k) {
+  for (int budget = 0; budget < 16; budget++) {
+    sockaddr_in from; socklen_t fl = sizeof(from);
+    int n = recvfrom(ups[k].fd, dbuf, sizeof(dbuf), MSG_DONTWAIT, (sockaddr*)&from, &fl);
+    if (n < 0) break;
+    if (from.sin_addr.s_addr != (uint32_t)UPSTREAM || ntohs(from.sin_port) != UPSTREAM_PORT) continue;
+    relayReply(dbuf, n, k);
+  }
+}
+static bool upstreamInit() {
+  for (int i = 0; i < UP_SOCKS; i++) { ups[i].fd = -1; ups[i].inFlight = 0; ups[i].dirty = false; }
+  rotateUpstreamPorts();
+  for (int i = 0; i < UP_SOCKS; i++) if (ups[i].fd >= 0) return true;
+  return false;
+}
+#else
+// ---- DNS-over-TLS upstream (RFC 7858), the default ----
+// Queries never leave in the clear: they go to UPSTREAM over one TLS connection to port
+// 853, each as a 2-byte length plus the message, pipelined; replies come back in any order
+// and are matched through the same pending table. Nobody on the path can read or forge
+// them, so the UDP source-port games aren't needed. The connection opens on demand and
+// reopens after the server closes it (it does when idle); TLS session resumption keeps the
+// reconnects cheap. The certificate must chain to a root in CA_BUNDLE and name
+// UPSTREAM_DOT_HOST. If that fails, or port 853 can't be reached, lookups get SERVFAIL:
+// the device fails closed rather than falling back to plaintext (which anyone able to block
+// 853 could then force). It retries with backoff, and the dashboard shows the state.
+#ifndef UPSTREAM_DOT_HOST
+#define UPSTREAM_DOT_HOST "dns.quad9.net"
+#endif
+#ifndef UPSTREAM_DOT_PORT
+#define UPSTREAM_DOT_PORT 853
+#endif
+static const uint32_t UPSTREAM_TIMEOUT_MS = 4000;   // first query may wait for a TLS reconnect
+static const uint32_t DOT_CONNECT_MS = 8000, DOT_BACKOFF_MAX_MS = 60000;
+#define DOT_NAME UPSTREAM_DOT_HOST ":" STR(UPSTREAM_DOT_PORT)
+static const char S_DOT_UP[]   = "encrypted: DNS-over-TLS to " DOT_NAME;
+static const char S_DOT_IDLE[] = "encrypted: DNS-over-TLS to " DOT_NAME " (idle, reconnects on demand)";
+static const char S_DOT_CONN[] = "DOWN: can't connect to " DOT_NAME " (port blocked?). Lookups fail until it works.";
+static const char S_DOT_TLS[]  = "DOWN: TLS handshake with " DOT_NAME " failed. Lookups fail until it works.";
+static const char S_DOT_CERT[] = "DOWN: " DOT_NAME " presented a certificate that doesn't check out. Lookups fail until it does.";
+const char* volatile upstreamStatus = S_DOT_IDLE;
+enum DotState : uint8_t { DOT_DOWN, DOT_CONNECTING, DOT_HANDSHAKE, DOT_UP };
+static DotState dotState = DOT_DOWN;
+static int dotFd = -1;
+static mbedtls_ssl_context dotSsl;
+static mbedtls_ssl_config dotConf;
+static mbedtls_x509_crt dotNoCa;                       // empty: chains end "not trusted" and dotVerify decides
+static mbedtls_ssl_session dotSession;
+static bool dotHaveSession = false;
+static uint8_t dotOut[2048];                           // framed queries not yet written
+static size_t dotOutLen = 0, dotWriting = 0;           // dotWriting: length of a write mbedtls asked us to retry
+static uint8_t dotMsg[sizeof(dbuf)], dotHdr[2], dotHdrHave = 0;
+static uint16_t dotMsgLen = 0, dotMsgHave = 0;
+static uint32_t dotSince = 0, dotRetryAt = 0, dotBackoffMs = 0;
+
+// Same check as the framework's bundle verifier, but reading CA_BUNDLE directly: the
+// framework keeps one global copy that every blocklist download frees and rebuilds, which
+// could pull it out from under a handshake in this task. mbedtls verifies the chain and the
+// hostname itself; this only decides whether the top certificate was issued by one of our
+// roots (found by the issuer's name, then the signature checked with that root's key).
+static int dotCheckSig(mbedtls_x509_crt* child, const uint8_t* key, size_t keyLen) {
+  mbedtls_x509_crt parent; mbedtls_x509_crt_init(&parent);
+  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+  const mbedtls_md_info_t* md = mbedtls_md_info_from_type(child->sig_md);
+  int r = -1;
+  if (md && !mbedtls_pk_parse_public_key(&parent.pk, key, keyLen) && mbedtls_pk_can_do(&parent.pk, child->sig_pk) &&
+      !mbedtls_md(md, child->tbs.p, child->tbs.len, hash))
+    r = mbedtls_pk_verify_ext(child->sig_pk, child->sig_opts, &parent.pk, child->sig_md, hash,
+                              mbedtls_md_get_size(md), child->sig.p, child->sig.len);
+  mbedtls_x509_crt_free(&parent);
+  return r;
+}
+static int dotVerify(void*, mbedtls_x509_crt* crt, int, uint32_t* flags) {
+  if ((*flags & ~MBEDTLS_X509_BADCERT_BAD_MD) != MBEDTLS_X509_BADCERT_NOT_TRUSTED) return 0;
+  const uint8_t* p = CA_BUNDLE + 2;
+  for (int i = 0, n = (CA_BUNDLE[0] << 8) | CA_BUNDLE[1]; i < n; i++) {
+    size_t nl = (p[0] << 8) | p[1], kl = (p[2] << 8) | p[3];
+    const uint8_t* name = p + 4; const uint8_t* key = name + nl;
+    if (nl == crt->issuer_raw.len && !memcmp(name, crt->issuer_raw.p, nl) && !dotCheckSig(crt, key, kl)) { *flags = 0; break; }
+    p = key + kl;
+  }
+  return 0;                                            // flags still set -> handshake fails
+}
+static int dotSend(void*, const unsigned char* b, size_t n) {
+  int r = send(dotFd, b, n, 0);
+  return r >= 0 ? r : (errno == EAGAIN || errno == EWOULDBLOCK) ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
+}
+static int dotRecv(void*, unsigned char* b, size_t n) {
+  int r = recv(dotFd, b, n, 0);
+  return r >= 0 ? r : (errno == EAGAIN || errno == EWOULDBLOCK) ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
+}
+// Close the connection. failed: back off before the next attempt (doubling, up to a minute).
+// Queries still queued or in flight just expire; clients retry.
+static void dotDrop(bool failed, const char* status) {
+  if (dotFd >= 0) close(dotFd);
+  dotFd = -1; dotState = DOT_DOWN;
+  mbedtls_ssl_session_reset(&dotSsl);
+  dotOutLen = dotWriting = 0; dotHdrHave = 0; dotMsgLen = dotMsgHave = 0;
+  upstreamStatus = status;
+  if (failed) {
+    dotBackoffMs = dotBackoffMs ? min(dotBackoffMs * 2, DOT_BACKOFF_MAX_MS) : 2000;
+    dotRetryAt = millis() + dotBackoffMs;
+    if (status != S_DOT_CONN) dotHaveSession = false;   // don't resume a session that just failed
+  }
+}
+static bool dotOpen() {
+  dotFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (dotFd < 0) { dotDrop(true, S_DOT_CONN); return false; }
+  fcntl(dotFd, F_SETFL, fcntl(dotFd, F_GETFL, 0) | O_NONBLOCK);
+  int one = 1; setsockopt(dotFd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(UPSTREAM_DOT_PORT); a.sin_addr.s_addr = (uint32_t)UPSTREAM;
+  if (connect(dotFd, (sockaddr*)&a, sizeof(a)) < 0 && errno != EINPROGRESS) { dotDrop(true, S_DOT_CONN); return false; }
+  mbedtls_ssl_set_hostname(&dotSsl, UPSTREAM_DOT_HOST);
+  if (dotHaveSession) mbedtls_ssl_set_session(&dotSsl, &dotSession);
+  dotState = DOT_CONNECTING; dotSince = millis();
+  return true;
+}
+// Reassemble length-prefixed replies (they can span reads) and relay each complete one.
+static void dotFeed(const uint8_t* p, size_t n) {
+  while (n) {
+    if (dotHdrHave < 2) {
+      dotHdr[dotHdrHave++] = *p++; n--;
+      if (dotHdrHave == 2) { dotMsgLen = (dotHdr[0] << 8) | dotHdr[1]; dotMsgHave = 0; if (!dotMsgLen) dotHdrHave = 0; }
+      continue;
+    }
+    size_t take = min(n, (size_t)(dotMsgLen - dotMsgHave));
+    if (dotMsgHave < sizeof(dotMsg))                   // past the buffer is dropped: such replies go back truncated
+      memcpy(dotMsg + dotMsgHave, p, min(take, sizeof(dotMsg) - dotMsgHave));
+    dotMsgHave += take; p += take; n -= take;
+    if (dotMsgHave == dotMsgLen) { relayReply(dotMsg, dotMsgLen, 0); dotHdrHave = 0; }
+  }
+}
+// Advance the connection: finish connecting, handshake, write queued queries, read replies.
+static void dotPump() {
+  if (dotState == DOT_DOWN) return;
+  if (dotState != DOT_UP && millis() - dotSince > DOT_CONNECT_MS) { dotDrop(true, dotState == DOT_CONNECTING ? S_DOT_CONN : S_DOT_TLS); return; }
+  if (dotState == DOT_CONNECTING) {
+    fd_set wf; FD_ZERO(&wf); FD_SET(dotFd, &wf); timeval z = { 0, 0 };
+    if (select(dotFd + 1, nullptr, &wf, nullptr, &z) <= 0) return;
+    int err = 0; socklen_t el = sizeof(err);
+    getsockopt(dotFd, SOL_SOCKET, SO_ERROR, &err, &el);
+    if (err) { dotDrop(true, S_DOT_CONN); return; }
+    dotState = DOT_HANDSHAKE;
+  }
+  if (dotState == DOT_HANDSHAKE) {
+    int r = mbedtls_ssl_handshake(&dotSsl);
+    if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) return;
+    if (r) { dotDrop(true, mbedtls_ssl_get_verify_result(&dotSsl) ? S_DOT_CERT : S_DOT_TLS); return; }
+    mbedtls_ssl_session_free(&dotSession); mbedtls_ssl_session_init(&dotSession);
+    dotHaveSession = !mbedtls_ssl_get_session(&dotSsl, &dotSession);
+    dotState = DOT_UP; dotBackoffMs = 0; upstreamStatus = S_DOT_UP;
+  }
+  while (dotOutLen) {
+    size_t n = dotWriting ? dotWriting : dotOutLen;      // a retried write must repeat the same length
+    int r = mbedtls_ssl_write(&dotSsl, dotOut, n);
+    if (r == MBEDTLS_ERR_SSL_WANT_WRITE || r == MBEDTLS_ERR_SSL_WANT_READ) { dotWriting = n; break; }
+    dotWriting = 0;
+    if (r <= 0) { dotDrop(false, S_DOT_IDLE); return; }
+    memmove(dotOut, dotOut + r, dotOutLen - r); dotOutLen -= r;
+  }
+  for (int budget = 0; budget < 16; budget++) {
+    uint8_t buf[512];
+    int r = mbedtls_ssl_read(&dotSsl, buf, sizeof(buf));
+    if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) break;
+    if (r <= 0) { dotDrop(false, S_DOT_IDLE); return; }  // the server closing an idle connection is normal
+    dotFeed(buf, r);
+  }
+}
+// 0 if the query can go out (opening the connection if needed), -1 to answer SERVFAIL.
+static int upstreamPick(int qlen) {
+  if (dotState == DOT_DOWN) {
+    if ((int32_t)(millis() - dotRetryAt) < 0) return -1;   // backing off after a failure
+    if (!dotOpen()) return -1;
+  }
+  return dotOutLen + 2 + qlen <= sizeof(dotOut) ? 0 : -1;
+}
+static void upstreamSend(int, int qlen) {
+  dotOut[dotOutLen++] = qlen >> 8; dotOut[dotOutLen++] = qlen & 0xFF;
+  memcpy(dotOut + dotOutLen, dbuf, qlen); dotOutLen += qlen;
+  dotPump();                                           // send now if the connection is up
+}
+static void finishPending(Pending& q) { q.used = false; }
+static bool upstreamInit() {
+  mbedtls_ssl_init(&dotSsl); mbedtls_ssl_config_init(&dotConf);
+  mbedtls_x509_crt_init(&dotNoCa); mbedtls_ssl_session_init(&dotSession);
+  if (mbedtls_ssl_config_defaults(&dotConf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) return false;
+  mbedtls_ssl_conf_rng(&dotConf, hwRng, nullptr);
+  mbedtls_ssl_conf_authmode(&dotConf, MBEDTLS_SSL_VERIFY_REQUIRED);
+  mbedtls_ssl_conf_ca_chain(&dotConf, &dotNoCa, nullptr);
+  mbedtls_ssl_conf_verify(&dotConf, dotVerify, nullptr);
+  if (mbedtls_ssl_setup(&dotSsl, &dotConf)) return false;
+  mbedtls_ssl_set_bio(&dotSsl, nullptr, dotSend, dotRecv, nullptr);
+  return true;
+}
+#endif
+
+// Returns false if the query can't go upstream (table full, or DNS-over-TLS down); the
+// caller answers SERVFAIL so the client moves on.
+static bool forwardUpstream(uint32_t cip, uint16_t cport, int qlen, int qend) {
+  int slot = -1;
+  for (int i = 0; i < MAX_PENDING; i++) if (!pending[i].used) { slot = i; break; }
+  if (slot < 0) return false;
+  int k = upstreamPick(qlen);
   if (k < 0) return false;
   uint16_t wid; bool clash;
   do {                                                  // random txid not already in flight
@@ -505,29 +758,10 @@ static bool forwardUpstream(uint32_t cip, uint16_t cport, int qlen, int qend) {
   q.cip = cip; q.cport = cport; q.cid0 = dbuf[0]; q.cid1 = dbuf[1]; q.wid = wid;
   q.qlen = (qend > 12 && qend <= qlen) ? qend - 12 : 0;
   q.qhash = fnv32(dbuf + 12, q.qlen); q.sentAt = millis(); q.used = true; q.sock = k;
-  ups[k].inFlight++; ups[k].dirty = true;
+  q.maxLen = clientMaxLen(dbuf, qlen, qend);
   dbuf[0] = wid >> 8; dbuf[1] = wid & 0xFF;
-  sendTo(ups[k].fd, (uint32_t)UPSTREAM, UPSTREAM_PORT, dbuf, qlen);
+  upstreamSend(k, qlen);
   return true;
-}
-static void finishPending(Pending& q) { q.used = false; if (ups[q.sock].inFlight) ups[q.sock].inFlight--; }
-static void handleUpstreamReplies(int k) {
-  for (int budget = 0; budget < 16; budget++) {
-    sockaddr_in from; socklen_t fl = sizeof(from);
-    int n = recvfrom(ups[k].fd, dbuf, sizeof(dbuf), MSG_DONTWAIT, (sockaddr*)&from, &fl);
-    if (n < 0) break;
-    if (from.sin_addr.s_addr != (uint32_t)UPSTREAM || ntohs(from.sin_port) != UPSTREAM_PORT || n < 12) continue;
-    uint16_t wid = (dbuf[0] << 8) | dbuf[1];
-    for (int i = 0; i < MAX_PENDING; i++) {
-      Pending& q = pending[i];
-      if (!q.used || q.wid != wid || q.sock != k) continue;
-      if (n < 12 + q.qlen || fnv32(dbuf + 12, q.qlen) != q.qhash) break;   // not our question
-      dbuf[0] = q.cid0; dbuf[1] = q.cid1;
-      sendTo(dnsSock, q.cip, q.cport, dbuf, n);
-      finishPending(q);
-      break;
-    }
-  }
 }
 static void expirePending() {
   uint32_t now = millis();
@@ -581,25 +815,37 @@ static void handleClientQueries() {
 static void dnsTask(void*) {
   for (;;) {
     lanIp = (uint32_t)WiFi.localIP(); lanMask = (uint32_t)WiFi.subnetMask();   // follows DHCP changes
-    fd_set rf; FD_ZERO(&rf); FD_SET(dnsSock, &rf); int maxfd = dnsSock;
+    fd_set rf, wf; FD_ZERO(&rf); FD_ZERO(&wf); FD_SET(dnsSock, &rf); int maxfd = dnsSock;
+#ifdef UPSTREAM_PLAIN
     for (int i = 0; i < UP_SOCKS; i++) if (ups[i].fd >= 0) { FD_SET(ups[i].fd, &rf); if (ups[i].fd > maxfd) maxfd = ups[i].fd; }
+#else
+    if (dotFd >= 0) {
+      FD_SET(dotFd, &rf);
+      if (dotState == DOT_CONNECTING || (dotState == DOT_UP && dotOutLen)) FD_SET(dotFd, &wf);
+      if (dotFd > maxfd) maxfd = dotFd;
+    }
+#endif
     timeval tv = {0, 100000};                         // wake at least every 100 ms to expire
-    if (select(maxfd + 1, &rf, nullptr, nullptr, &tv) > 0) {
+    if (select(maxfd + 1, &rf, &wf, nullptr, &tv) > 0) {
+#ifdef UPSTREAM_PLAIN
       for (int i = 0; i < UP_SOCKS; i++) if (ups[i].fd >= 0 && FD_ISSET(ups[i].fd, &rf)) handleUpstreamReplies(i);
+#endif
       if (FD_ISSET(dnsSock, &rf)) handleClientQueries();
     }
-    expirePending();
+#ifdef UPSTREAM_PLAIN
     rotateUpstreamPorts();
+#else
+    dotPump();
+#endif
+    expirePending();
   }
 }
 static bool startDns() {
   dnsSock = udpSocket(DNS_PORT);
-  for (int i = 0; i < UP_SOCKS; i++) { ups[i].fd = -1; ups[i].inFlight = 0; ups[i].dirty = false; }
-  rotateUpstreamPorts();
-  int open = 0; for (int i = 0; i < UP_SOCKS; i++) open += ups[i].fd >= 0;
-  if (dnsSock < 0 || !open) return false;
-  // Stack is in bytes; lookups read flash through LittleFS, so leave headroom.
-  return xTaskCreate(dnsTask, "dns", 8192, nullptr, 3, nullptr) == pdPASS;
+  if (dnsSock < 0 || !upstreamInit()) return false;
+  // Stack is in bytes; lookups read flash through LittleFS, and a DNS-over-TLS handshake
+  // (ECDHE + certificate checks) runs in this task too.
+  return xTaskCreate(dnsTask, "dns", 12288, nullptr, 3, nullptr) == pdPASS;
 }
 
 // ---------- web ----------
@@ -1009,6 +1255,7 @@ static void handleStats() {
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt && (int32_t)(resumeAt - millis()) > 0 ? (resumeAt - millis()) / 1000 : 0) +
              ",\"noauth\":" + (adminSet ? "false" : "true") +
+             ",\"upstream\":\"" + jesc(String((const char*)upstreamStatus)) + "\"" +
              ",\"nclients\":" + numClients + ",\"globalLock\":" + String(globalLockedFor()) +
              ",\"locked\":" + String(r == AUTH_LOCKED ? max(lockedFor(clientIp()), globalLockedFor()) : 0) +
              ",\"admin\":" + (admin ? "true" : "false");
@@ -1306,7 +1553,6 @@ static mbedtls_pk_context tlsKey;
 static mbedtls_ssl_config tlsConf;
 static mbedtls_ssl_cache_context tlsCache;
 static String tlsFingerprint;                       // "AB:CD:..." SHA-256 of the certificate
-static int hwRng(void*, unsigned char* b, size_t n) { esp_fill_random(b, n); return 0; }
 
 static bool makeTlsCert(uint8_t* keyDer, size_t& keyLen, uint8_t* crtDer, size_t& crtLen) {
   static const char NAME[] = "CN=c3adblock.local,O=C3 AdBlock";

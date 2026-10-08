@@ -12,7 +12,7 @@ fit in ~0.7 MB of flash, lookups take ~10 ms, and the firmware uses **~50 KB of 
 query in ──▶ extract domain ──▶ FNV-1a hash (+ parent suffixes)
          ──▶ custom list? ──▶ RAM cache? ──▶ RAM index → one flash read of the bucket
               ├─ hit  ──▶ answer 0.0.0.0   (sinkholed)
-              └─ miss ──▶ forward to upstream resolver (Quad9), relay the reply
+              └─ miss ──▶ forward to Quad9 over DNS-over-TLS, relay the reply
 ```
 
 ## Contents
@@ -160,7 +160,8 @@ safe to use.
 ## Features
 
 - 🚫 **DNS sinkhole.** Blocked domains (and their subdomains) answer `0.0.0.0`. Everything
-  else is forwarded to Quad9 (`9.9.9.9`, changeable at build time).
+  else is forwarded to Quad9 **encrypted, over DNS-over-TLS** (`dns.quad9.net:853`,
+  changeable at build time).
 - 💾 **Hash-in-flash blocklist.** ~140k domains by default, up to ~250k with firmware OTA,
   ~537k with the single-app layout.
 - 📊 **Web dashboard** at `https://c3adblock.local`. Shows per-client block/allow counts,
@@ -204,9 +205,25 @@ need PSRAM. This project stores fixed **5-byte (40-bit) FNV-1a hashes in flash**
 **Forwarding path:** DNS has its own task, so the dashboard, uploads, and blocklist
 downloads in `loop()` can't delay it. An allowed query is sent upstream with a fresh
 random txid and recorded in a 32-slot table. When a reply arrives, it's relayed only if
-it comes from the upstream address and its txid and question match a recorded query.
-Unanswered entries expire after 2.5 s (the client retries). If all slots are busy, the
-query gets an immediate SERVFAIL, so the client can fail over to a secondary resolver.
+its txid and question match a recorded query. Unanswered entries expire after 4 s (the
+client retries). If all slots are busy, the query gets an immediate SERVFAIL, so the
+client can fail over to a secondary resolver.
+
+**Encrypted upstream (DNS-over-TLS).** Queries leave the device only inside one TLS
+connection to `dns.quad9.net` on port 853 (RFC 7858), pipelined, with answers matched as
+they arrive in any order. Your ISP and anyone else on the path see a TLS connection to
+Quad9, not the names you look up. The server's certificate must chain to a root in
+`src/ca_bundle.h` and name `dns.quad9.net`. The connection opens on demand and reopens when
+Quad9 closes it after being idle; TLS session resumption keeps reconnects cheap. A full
+handshake (after a failure, or once the session expires) takes the DNS task a moment, so
+lookups can pause briefly then. Answers too big for the client's UDP buffer (512 bytes, or
+its EDNS size) go back truncated with the TC bit set, as a UDP resolver would.
+
+It **fails closed**: if port 853 is blocked or the certificate doesn't check out, lookups
+get SERVFAIL rather than going out in the clear, retried with backoff up to a minute. The
+dashboard shows the upstream state, with a red banner when it's down. On a network that
+blocks 853, build with `-DUPSTREAM_PLAIN` to go back to plain UDP to `UPSTREAM_IP:UPSTREAM_PORT`
+(with randomized source ports); the dashboard then labels the upstream as unencrypted.
 
 **Why 40 bits?** It suits this flash budget. Collisions follow the birthday bound: at
 141k domains you get ~0, and at 537k about 1 (one unlucky domain gets over-blocked).
@@ -386,7 +403,7 @@ partition table (no firmware OTA). Choose in `partitions.csv`:
 
 | Setting | Where | Default | Notes |
 |---|---|---|---|
-| Upstream resolver | `-DUPSTREAM_IP=a,b,c,d` / `-DUPSTREAM_PORT` build flags | Quad9 `9.9.9.9:53` | Add to `build_flags` in `platformio.ini` |
+| Upstream resolver | `-DUPSTREAM_IP=a,b,c,d`, `-DUPSTREAM_DOT_HOST='"name"'`, `-DUPSTREAM_DOT_PORT` build flags | Quad9 `9.9.9.9`, DNS-over-TLS as `dns.quad9.net:853` | Add to `build_flags` in `platformio.ini`. The host name must match the server's certificate, and its root must be in `src/ca_bundle.h`. `-DUPSTREAM_PLAIN` (with `-DUPSTREAM_PORT`, default 53) switches to unencrypted UDP |
 | Fallback WiFi | `WIFI_SSID` / `WIFI_PASS` in `secrets.h` | placeholders (ignored) | Portal-saved WiFi takes priority |
 | Admin user | `WEB_USER` in `secrets.h` | `admin` | |
 | Admin password | Setup portal (NVS), else `WEB_PASS` | none, so the API is locked | Placeholder is ignored; minimum 8 chars in the portal |

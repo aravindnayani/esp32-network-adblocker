@@ -31,7 +31,9 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <button id=pausebtn onclick=togglePause()>Pause</button></div>
 <div id=confbar style="display:none;margin-bottom:14px;padding:12px 14px;background:#2d2410;border:1px solid #d29922;color:#f2cc60;border-radius:8px">
 👆 <b>Press the BOOT button on the device</b> to approve <b id=confwhat></b> <span id=confleft style=color:#8b949e></span></div>
+<div id=upwarn style="display:none;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px"></div>
 <div class=cards id=sys></div>
+<div id=upstat style="color:#8b949e;font-size:12px;margin:-6px 0 14px"></div>
 <div id=admin style=display:none>
 <h2>CLIENTS</h2><table id=ct><thead><tr><th>Client</th><th>MAC</th><th>Blocked</th><th>Allowed</th><th></th></tr></thead><tbody></tbody></table>
 <h2>CUSTOM BLOCKED DOMAINS</h2>
@@ -78,6 +80,7 @@ pausebtn.textContent=on?'Pause':'Resume';pausebtn.style.display=s.admin?'':'none
 sys.innerHTML=[['Total blocked',fmt(s.blocked),'b'],['Total allowed',fmt(s.allowed),'a'],...(s.foreign?[['Dropped (non-local)',fmt(s.foreign),'b']]:[]),['Blocklist',fmt(s.domains)+' domains',''],
 ['Clients',s.nclients,''],['WiFi',s.rssi+' dBm',''],['Temp',s.temp+' °C',''],['Free RAM',Math.round(s.heap/1024)+' KB',''],['Uptime',s.uptime,'']]
 .map(c=>`<div class=card><div class="v ${c[2]}">${c[1]}</div><div class=l>${c[0]}</div></div>`).join('');
+let upDown=/^(DOWN|UNENCRYPTED)/.test(s.upstream||'');upwarn.style.display=upDown?'block':'none';upwarn.textContent=upDown?'⚠️ Upstream DNS: '+s.upstream:'';upstat.textContent=upDown?'':'🔒 Upstream DNS: '+(s.upstream||'');
 glock.style.display=s.globalLock?'block':'none';glock.textContent=s.globalLock?'⛔ Too many wrong passwords across the network: every device is refused for '+s.globalLock+'s. Press BOOT on the device to clear it.':'';
 loginbar.style.display=s.admin||s.noauth?'none':'flex';lockmsg.textContent=s.locked?'Locked for '+s.locked+'s after wrong passwords.':'';
 admin.style.display=s.admin?'':'none';if(!s.admin){showConf(null);return}
