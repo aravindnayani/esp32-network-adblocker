@@ -30,7 +30,7 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 
 The C3 is plenty for the default ~100k-domain list. Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi). On an S3 board with two USB ports, plug into the one labelled **USB**, not **UART**, or the setup password won't show up in the console.
 
-1. **Flash it.** Open this repo's GitHub Pages installer, plug in the board, and click **⚡ Connect & Install**. It takes about 30 seconds.
+1. **Flash it.** Open the [web installer](https://aravindnayani.github.io/esp32-network-adblocker/), plug in the board, and click **⚡ Connect & Install**. It detects whether you have a C3 or an S3 and flashes the right image. It takes about 30 seconds.
 2. **Get the setup password.** In the installer, open **Logs & Console**. The device prints the password for its setup WiFi there. Write it down.
 3. **Join the setup WiFi** `C3-AdBlock-XXXX` from your phone with that password. A setup page opens.
 4. **Fill in three things:** your home WiFi, its password, and a new admin password (8+ characters). Tap **Connect**.
