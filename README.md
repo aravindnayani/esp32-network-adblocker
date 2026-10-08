@@ -373,7 +373,7 @@ partition table (no firmware OTA). Choose in `partitions.csv`:
 | OTA password | `OTA_PASS` | falls back to the admin password | With no password, network OTA is off |
 | Hash width | `HASH_BYTES` in `main.cpp` **and** `build_blocklist.py` | 5 (40-bit) | The two must match |
 | DNS clients | `-DDNS_SUBNET_ONLY` build flag | own subnet + private ranges | With the flag: own subnet only. Other sources are dropped |
-| Limits | `main.cpp` | 96 clients, 200 custom domains, 32 bans | |
+| Limits | `main.cpp` | 96 clients (when full, the least recently seen is replaced; bans are kept separately), 200 custom domains, 32 bans | |
 
 ## Security
 

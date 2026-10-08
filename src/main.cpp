@@ -58,13 +58,17 @@ static uint8_t cacheRes[CACHE_SIZE];
 static uint8_t cacheValid[CACHE_SIZE];
 static uint8_t rangeBuf[MAX_RANGE * HASH_BYTES];
 
-struct Dev { uint32_t ip; uint8_t mac[6]; uint32_t blocked, allowed, lastSeen; bool banned; String label; };
+struct Dev { uint32_t ip; uint8_t mac[6]; uint32_t blocked, allowed, lastSeen; String label; };
 static const int MAX_CLIENTS = 96;
 Dev clients[MAX_CLIENTS]; int numClients = 0;
 
 static const int MAX_CUSTOM = 200;
 String customDom[MAX_CUSTOM]; uint64_t customHash[MAX_CUSTOM]; int numCustom = 0;
 
+// Bans live only in this list (persisted to /banned.txt), never in the client table: the
+// table is a best-effort stats cache that evicts, so a ban stored there could be pushed out
+// by a flood of spoofed source addresses, and banned devices that hadn't queried yet since
+// boot used to be dropped from the file whenever any other ban changed.
 static const int MAX_BAN = 32;
 uint32_t bannedIP[MAX_BAN]; int numBanned = 0;
 
@@ -245,11 +249,20 @@ static void loadBanned() {
   f.close();
 }
 static void saveBanned() {
-  numBanned = 0;
-  for (int i = 0; i < numClients && numBanned < MAX_BAN; i++) if (clients[i].banned) bannedIP[numBanned++] = clients[i].ip;
   File f = LittleFS.open("/banned.txt", "w"); if (!f) return;
   for (int i = 0; i < numBanned; i++) { IPAddress ip(bannedIP[i]); f.println(ip.toString()); }
   f.close();
+}
+// Ban or unban `ip`. Returns false only if banning and the list is full.
+static bool setBanned(uint32_t ip, bool ban) {
+  for (int i = 0; i < numBanned; i++) if (bannedIP[i] == ip) {
+    if (!ban) { bannedIP[i] = bannedIP[--numBanned]; saveBanned(); }
+    return true;
+  }
+  if (!ban) return true;
+  if (numBanned >= MAX_BAN) return false;
+  bannedIP[numBanned++] = ip; saveBanned();
+  return true;
 }
 
 // ---------- client table ----------
@@ -261,12 +274,13 @@ static void getMac(uint32_t ip, uint8_t* mac) {
 }
 static Dev* getClient(uint32_t ip) {
   for (int i = 0; i < numClients; i++) if (clients[i].ip == ip) { clients[i].lastSeen = millis(); return &clients[i]; }
-  if (numClients < MAX_CLIENTS) {
-    Dev* c = &clients[numClients++];
-    c->ip = ip; c->blocked = c->allowed = 0; c->lastSeen = millis(); c->banned = isBannedIP(ip); c->label = "";
-    getMac(ip, c->mac); return c;
-  }
-  return nullptr;
+  // Full: reuse the least recently seen entry, so new clients still get counted. Only stats
+  // are lost; bans are kept separately (bannedIP).
+  Dev* c = &clients[0];
+  if (numClients < MAX_CLIENTS) c = &clients[numClients++];
+  else for (int i = 1; i < MAX_CLIENTS; i++) if (millis() - clients[i].lastSeen > millis() - c->lastSeen) c = &clients[i];
+  c->ip = ip; c->blocked = c->allowed = 0; c->lastSeen = millis(); c->label = "";
+  getMac(ip, c->mac); return c;
 }
 
 // ---------- DNS ----------
@@ -439,7 +453,7 @@ static void handleClientQueries() {
     {
       StateLock lock;                                 // client table + blocklist are shared with the web side
       Dev* c = getClient(cip);
-      blocked = (c && c->banned) || (blockingOn && dl && numHashes && isBlocked(domain));
+      blocked = isBannedIP(cip) || (blockingOn && dl && numHashes && isBlocked(domain));
       if (blocked) { totalBlocked++; if (c) c->blocked++; }
       else         { totalAllowed++; if (c) c->allowed++; }
     }
@@ -759,7 +773,13 @@ static void handleStats() {
   }
   j += "],\"clients\":[";
   for (int i = 0; i < numClients; i++) { Dev& c = clients[i]; IPAddress ip(c.ip);
-    j += (i ? "," : ""); j += "{\"ip\":\"" + ip.toString() + "\",\"mac\":\"" + macStr(c.mac) + "\",\"blocked\":" + c.blocked + ",\"allowed\":" + c.allowed + ",\"banned\":" + (c.banned?"true":"false") + "}"; }
+    j += (i ? "," : ""); j += "{\"ip\":\"" + ip.toString() + "\",\"mac\":\"" + macStr(c.mac) + "\",\"blocked\":" + c.blocked + ",\"allowed\":" + c.allowed + ",\"banned\":" + (isBannedIP(c.ip)?"true":"false") + "}"; }
+  for (int b = 0; b < numBanned; b++) {                  // banned but not in the table (yet): still listed, so it can be unbanned
+    bool listed = false;
+    for (int i = 0; i < numClients; i++) if (clients[i].ip == bannedIP[b]) { listed = true; break; }
+    if (listed) continue;
+    j += (numClients || b ? "," : ""); j += "{\"ip\":\"" + IPAddress(bannedIP[b]).toString() + "\",\"mac\":\"00:00:00:00:00:00\",\"blocked\":0,\"allowed\":0,\"banned\":true}";
+  }
   j += "],\"custom\":[";
   for (int i = 0; i < numCustom; i++) { j += (i ? "," : ""); j += "\"" + jesc(customDom[i]) + "\""; }
   j += "]}";
@@ -769,8 +789,9 @@ static void handleBan() {
   if (!requireAuth()) return;
   IPAddress ip;
   if (ip.fromString(web.arg("ip"))) {
-    bool banned = false;
-    { StateLock lock; Dev* c = getClient((uint32_t)ip); if (c) { c->banned = !c->banned; banned = c->banned; saveBanned(); } }
+    bool banned, ok;
+    { StateLock lock; banned = !isBannedIP((uint32_t)ip); ok = setBanned((uint32_t)ip, banned); }
+    if (!ok) { web.send(507, "text/plain", "ban list is full (" + String(MAX_BAN) + " devices): unban one first"); return; }
     audit(banned ? "ban" : "unban", ip.toString());
   }
   web.send(200, "text/plain", "ok");
