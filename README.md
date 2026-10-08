@@ -2,7 +2,7 @@
 
 **Block ads and trackers for your whole home network with a $2 ESP32-C3 plugged into your router's USB port.**
 
-It works like a pocket Pi-hole: every device on your network asks it for website addresses, and it answers "nowhere" for about 140,000 known ad and tracking domains. Everything else gets looked up for real, encrypted.
+It works like a pocket Pi-hole: every device on your network asks it for website addresses, and it answers "nowhere" for over 100,000 known ad and tracking domains. Everything else gets looked up for real, encrypted.
 
 ```
 your phone ──"where is ads.example.com?"──▶  ESP32  ──▶  0.0.0.0   (blocked)
@@ -20,9 +20,15 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 
 ## Get started in 5 minutes
 
-**You need:** an ESP32-C3 board with 4 MB flash (a C3 SuperMini works well), a USB cable, and Chrome or Edge on a computer.
+**You need:** one of the boards below, a USB cable, and Chrome or Edge on a computer.
 
-Want a bigger blocklist? An ESP32-S3 with 8 MB+ flash also works, and it holds about 1M domains instead of about 250k. It costs more ($5–10) and is bigger.
+| Board | Price | Blocklist room | Browser installer |
+|---|---|---|---|
+| **ESP32-C3**, 4 MB flash (e.g. C3 SuperMini) — *recommended* | ~$2 | ~250k domains | ✅ |
+| **ESP32-S3**, 8 MB+ flash (e.g. S3 DevKitC-1 N8/N16) | ~$5–10 | ~1M domains | ✅ |
+| Classic **ESP32**, 4 MB (DevKit / WROOM) | ~$3–5 | ~250k domains | build from source |
+
+The C3 is plenty for the default ~100k-domain list. Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi). On an S3 board with two USB ports, plug into the one labelled **USB**, not **UART**, or the setup password won't show up in the console.
 
 1. **Flash it.** Open this repo's GitHub Pages installer, plug in the board, and click **⚡ Connect & Install**. It takes about 30 seconds.
 2. **Get the setup password.** In the installer, open **Logs & Console**. The device prints the password for its setup WiFi there. Write it down.
@@ -64,7 +70,7 @@ All of this happens on the dashboard at **https://c3adblock.local** (user `admin
 
 ---
 
-## How a $2 chip holds 140,000 domains
+## How a $2 chip holds a quarter-million domains
 
 Most ESP32 ad-blockers keep the domain names in RAM, so they need a pricier board with PSRAM. This one turns each domain into a **5-byte fingerprint** (a 40-bit FNV-1a hash), sorts the fingerprints, and leaves them in flash.
 
@@ -113,9 +119,10 @@ After that, firmware and blocklists update over WiFi.
 
 ## Hardware tips
 
-- **Board:** any ESP32-C3 with 4 MB flash. The classic ESP32 also builds (`-e esp32dev`).
+- **Board:** see the [table above](#get-started-in-5-minutes). The C3 is the main tested target. The classic ESP32 is community-contributed and compile-tested.
+- **BOOT LED:** blinks when an action waits for your press. It's the blue LED on a C3 SuperMini and the RGB LED on an S3 DevKitC-1. On a DevKitC-1 v1.1 the RGB LED moved to GPIO 38, so build with `-DCONFIRM_LED=38 -DCONFIRM_LED_RGB`.
 - **Power:** use a solid USB source. A router's USB port plus a USB-A→C adapter works well. Cheap adapters can cause dropouts.
-- **Case:** a printable enclosure is in [`hardware/`](hardware/esp32-c3-supermini-enclosure.stl). Keep the antenna end (opposite the USB port) clear of plastic and metal.
+- **Case:** a printable C3 SuperMini enclosure is in [`hardware/`](hardware/esp32-c3-supermini-enclosure.stl). Keep the antenna end (opposite the USB port) clear of plastic and metal.
 
 ---
 

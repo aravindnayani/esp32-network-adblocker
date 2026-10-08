@@ -48,9 +48,14 @@ This isn't just a workaround for the C3. On a 16 MB ESP32-S3, the same scheme ho
 
 ## How much fits
 
-| Partition layout | Blocklist space | Max domains | Firmware OTA? |
+| Board and layout | Blocklist space | Max domains | Firmware OTA? |
 |---|---|---|---|
-| Default (`partitions.csv`, two app slots) | ~1.3 MB | ~250k | Yes |
-| Single app slot | more | ~537k | No |
+| C3 / classic ESP32, default (`partitions.csv`) | ~1.3 MB | ~250k | Yes |
+| C3 / classic ESP32, single app slot | more | ~537k | No |
+| S3, 8 MB (`partitions-s3-8mb.csv`) | ~4.9 MB | ~1M | Yes |
 
-The default list is about 140k domains (~0.7 MB).
+The default list is about 100k domains (~0.5 MB).
+
+The "max" numbers assume the new list overwrites the old one. To keep the old list blocking while a new one downloads, both have to fit at once, so the comfortable limit is about half: ~125k on a C3, ~500k on an S3.
+
+Because the S3 holds four times as many hashes, it also uses a four-times-larger RAM index (16,384 entries, 80 KB). That keeps every flash read to a small bucket.
