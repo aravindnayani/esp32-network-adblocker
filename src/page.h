@@ -20,7 +20,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 </style></head><body>
 <header><h1>🛡️ C3 AdBlock <span id=host></span></h1></header><div class=wrap>
 <div id=credwarn style="display:none;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">
-⚠️ <b>No admin password set.</b> Settings, uploads and firmware updates are locked. To set one, hold the <b>BOOT</b> button while powering the device on, then join its <code>C3-AdBlock-XXXX</code> WiFi and fill in the setup page.
+⚠️ <b>No admin password set.</b> Settings, uploads and firmware updates are locked. To set one, hold the <b>BOOT</b> button while powering the device on, then join its <code>C3-AdBlock-XXXX</code> WiFi (password on the serial console) and fill in the setup page.
 </div>
 <div id=glock style="display:none;margin-bottom:10px;padding:10px 14px;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;font-size:13px"></div>
 <div id=loginbar style="display:none;align-items:center;gap:12px;margin-bottom:14px;padding:12px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px">
@@ -60,7 +60,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 // A plain <img>/<form> CSRF can't set a custom header, only same-origin fetch()
 // can — so requiring this on every mutating request blocks drive-by CSRF even
 // though the server can't otherwise tell a forged request from a real one over
-// plain HTTP Basic Auth (browsers auto-replay cached Basic Auth cross-origin).
+// HTTP Basic Auth (browsers auto-replay cached Basic Auth cross-origin).
 const CSRF_HDRS={'X-Requested-With':'c3-adblock'}
 // Mirrors PAUSE_FREE_S in main.cpp: longer or indefinite pauses need a BOOT press.
 async function togglePause(){if(blockstate.dataset.on!='1'){fetch('/resume',{headers:CSRF_HDRS}).then(load);return}

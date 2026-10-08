@@ -22,6 +22,11 @@
 #include "mbedtls/pkcs5.h"
 #include "mbedtls/base64.h"
 #include <MD5Builder.h>         // espota's password hash
+#include "mbedtls/ssl.h"        // HTTPS front end for the dashboard
+#include "mbedtls/ssl_cache.h"
+#include "mbedtls/x509_crt.h"
+#include "mbedtls/oid.h"
+#include "mbedtls/net_sockets.h"
 #include "ca_bundle.h"  // trusted roots for HTTPS blocklist downloads (tools/gen_ca_bundle.py)
 #include "secrets.h"   // WIFI_SSID / WIFI_PASS — used only as a FALLBACK if no creds
                        // have been provisioned via the captive portal (copy secrets.example.h)
@@ -43,7 +48,13 @@ static const int CACHE_SIZE = 256;       // must be power of 2
 static const int MAX_RANGE = 256;        // max hashes per index bucket (fine up to ~1M hashes; flash holds far fewer)
 
 // ---- globals ----
-WebServer web(80);
+// The dashboard's WebServer listens on loopback only. Browsers reach it through the TLS
+// front end on :443 (see "HTTPS"), which relays each decrypted request here; :80 only
+// redirects to https. The setup portal has its own plain-HTTP server on the WPA2 setup AP.
+static const uint16_t INNER_PORT = 8080;
+WebServer web(IPAddress(127, 0, 0, 1), INNER_PORT);
+WebServer portalWeb(80);
+WiFiServer httpRedirect(80);
 File blocklist;
 uint32_t numHashes = 0, totalBlocked = 0, totalAllowed = 0, totalForeign = 0;
 
@@ -572,11 +583,26 @@ static String htmlEscape(const String& s) {
 static const char* CSRF_HEADER = "X-Requested-With";
 static const char* CSRF_VALUE  = "c3-adblock";
 
+// The TLS front end tells the dashboard who the browser is with "X-C3-Peer: <ip> <token>",
+// after dropping any X-C3-Peer the browser sent. <token> is random per boot, so a request
+// that somehow reached the loopback server without going through the front end can't claim
+// an address (and so can't dodge the per-IP lockout or another device's BOOT approval).
+static const char* PEER_HEADER = "X-C3-Peer";
+static char peerToken[33];
+static uint32_t clientIp() {             // 0 = not relayed by the front end
+  String v = web.header(PEER_HEADER);
+  int sp = v.indexOf(' ');
+  IPAddress ip;
+  if (sp < 0 || !peerToken[0] || v.substring(sp + 1) != peerToken || !ip.fromString(v.substring(0, sp))) return 0;
+  return (uint32_t)ip;
+}
+
 // DNS rebinding: a page on evil.example can re-point its own hostname at this device's
 // LAN IP. Its fetch() is then "same-origin", so it can set the CSRF header above and
 // read /stats.json. The browser still sends Host: evil.example, so only answer requests
 // addressed to a name or IP that really is this device.
 static bool hostOk() {
+  if (!clientIp()) return false;
   String h = web.hostHeader(); h.toLowerCase();
   int colon = h.indexOf(':'); if (colon >= 0) h = h.substring(0, colon);
   if (h.endsWith(".")) h.remove(h.length() - 1);
@@ -584,10 +610,9 @@ static bool hostOk() {
 }
 static bool requireHost() {
   if (hostOk()) return true;
-  web.send(403, "text/plain", "bad Host header (use http://c3adblock.local or the device IP)");
+  web.send(403, "text/plain", "bad Host header (use https://c3adblock.local or the device IP)");
   return false;
 }
-static uint32_t clientIp() { return (uint32_t)web.client().remoteIP(); }
 
 // ---------- audit log ----------
 // The last AUDIT_SIZE admin events (actions, wrong passwords, lockouts, confirmations) in a
@@ -786,7 +811,7 @@ static AuthResult checkAuth() {
 }
 static void sendAuthError(AuthResult r) {
   switch (r) {
-    case AUTH_HOST:    web.send(403, "text/plain", "bad Host header (use http://c3adblock.local or the device IP)"); break;
+    case AUTH_HOST:    web.send(403, "text/plain", "bad Host header (use https://c3adblock.local or the device IP)"); break;
     case AUTH_NOPASS:  web.send(403, "text/plain", "no admin password set: hold BOOT while powering on to run setup"); break;
     case AUTH_CSRF:    web.send(403, "text/plain", "missing CSRF header"); break;
     case AUTH_LOCKED: {
@@ -1184,6 +1209,236 @@ static void handleFwUpload() {
   }
 }
 
+// ---------- HTTPS ----------
+// The dashboard is served over TLS, so the admin password (Basic Auth) and everything else
+// stay encrypted on the LAN. The certificate is self-signed: browsers warn once, and the
+// SHA-256 fingerprint printed on the serial console and shown on the setup page lets you
+// check it's this device before accepting. The key (ECDSA P-256) and certificate are made
+// on the device on first boot and kept in NVS ("tls"), so the fingerprint stays the same
+// across reboots, firmware updates and BOOT resets.
+//
+// tlsTask terminates TLS on :443 and relays each request, one connection at a time, to the
+// WebServer on 127.0.0.1:INNER_PORT. It adds X-C3-Peer (see clientIp) and Connection:
+// close, so each TLS connection carries exactly one request; the session cache makes the
+// repeat handshakes cheap. It runs in its own task because WebServer reads a whole upload
+// inside one handleClient() call, which would deadlock with a relay in the same loop.
+static mbedtls_x509_crt   tlsCert;
+static mbedtls_pk_context tlsKey;
+static mbedtls_ssl_config tlsConf;
+static mbedtls_ssl_cache_context tlsCache;
+static String tlsFingerprint;                       // "AB:CD:..." SHA-256 of the certificate
+static int hwRng(void*, unsigned char* b, size_t n) { esp_fill_random(b, n); return 0; }
+
+static bool makeTlsCert(uint8_t* keyDer, size_t& keyLen, uint8_t* crtDer, size_t& crtLen) {
+  static const char NAME[] = "CN=c3adblock.local,O=C3 AdBlock";
+  // subjectAltName: dNSName c3adblock.local, dNSName c3adblock
+  static const uint8_t SAN[] = { 0x30, 0x1c, 0x82, 0x0f, 'c','3','a','d','b','l','o','c','k','.','l','o','c','a','l',
+                                 0x82, 0x09, 'c','3','a','d','b','l','o','c','k' };
+  static uint8_t buf[1024];
+  mbedtls_pk_context pk; mbedtls_pk_init(&pk);
+  mbedtls_x509write_cert crt; mbedtls_x509write_crt_init(&crt);
+  mbedtls_mpi serial; mbedtls_mpi_init(&serial);
+  uint8_t sn[16]; esp_fill_random(sn, sizeof(sn)); sn[0] &= 0x7f;   // positive serial
+  bool ok = false;
+  do {
+    if (mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY))) break;
+    if (mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(pk), hwRng, nullptr)) break;
+    if (mbedtls_mpi_read_binary(&serial, sn, sizeof(sn))) break;
+    mbedtls_x509write_crt_set_version(&crt, MBEDTLS_X509_CRT_VERSION_3);
+    mbedtls_x509write_crt_set_md_alg(&crt, MBEDTLS_MD_SHA256);
+    mbedtls_x509write_crt_set_subject_key(&crt, &pk);
+    mbedtls_x509write_crt_set_issuer_key(&crt, &pk);
+    if (mbedtls_x509write_crt_set_serial(&crt, &serial)) break;
+    if (mbedtls_x509write_crt_set_subject_name(&crt, NAME) || mbedtls_x509write_crt_set_issuer_name(&crt, NAME)) break;
+    if (mbedtls_x509write_crt_set_validity(&crt, "20250101000000", "20991231235959")) break;   // no RTC: fixed range
+    if (mbedtls_x509write_crt_set_basic_constraints(&crt, 0, -1)) break;
+    if (mbedtls_x509write_crt_set_extension(&crt, MBEDTLS_OID_SUBJECT_ALT_NAME, MBEDTLS_OID_SIZE(MBEDTLS_OID_SUBJECT_ALT_NAME),
+                                            0, SAN, sizeof(SAN))) break;
+    int n = mbedtls_x509write_crt_der(&crt, buf, sizeof(buf), hwRng, nullptr);   // written at the END of buf
+    if (n <= 0 || (size_t)n > crtLen) break;
+    memcpy(crtDer, buf + sizeof(buf) - n, n); crtLen = n;
+    n = mbedtls_pk_write_key_der(&pk, buf, sizeof(buf));
+    if (n <= 0 || (size_t)n > keyLen) break;
+    memcpy(keyDer, buf + sizeof(buf) - n, n); keyLen = n;
+    ok = true;
+  } while (false);
+  memset(buf, 0, sizeof(buf));
+  mbedtls_mpi_free(&serial); mbedtls_x509write_crt_free(&crt); mbedtls_pk_free(&pk);
+  return ok;
+}
+static bool parseTlsCert(const uint8_t* key, size_t keyLen, const uint8_t* crt, size_t crtLen) {
+  mbedtls_x509_crt_free(&tlsCert); mbedtls_pk_free(&tlsKey);
+  mbedtls_x509_crt_init(&tlsCert); mbedtls_pk_init(&tlsKey);
+  return keyLen && crtLen && !mbedtls_x509_crt_parse_der(&tlsCert, crt, crtLen) &&
+         !mbedtls_pk_parse_key(&tlsKey, key, keyLen, nullptr, 0);
+}
+// Call with the radio on: the hardware RNG is only truly random while WiFi is running.
+static bool loadTlsCert() {
+  uint8_t key[200], crt[800];
+  prefs.begin("tls", true);
+  size_t keyLen = prefs.isKey("key") ? prefs.getBytes("key", key, sizeof(key)) : 0;
+  size_t crtLen = prefs.isKey("crt") ? prefs.getBytes("crt", crt, sizeof(crt)) : 0;
+  prefs.end();
+  bool ok = parseTlsCert(key, keyLen, crt, crtLen);
+  if (!ok) {
+    Serial.println("[https] creating this device's TLS key and certificate...");
+    keyLen = sizeof(key); crtLen = sizeof(crt);
+    ok = makeTlsCert(key, keyLen, crt, crtLen) && parseTlsCert(key, keyLen, crt, crtLen);
+    if (ok) { prefs.begin("tls", false); prefs.putBytes("key", key, keyLen); prefs.putBytes("crt", crt, crtLen); prefs.end(); }
+  }
+  memset(key, 0, sizeof(key));
+  if (!ok) { Serial.println("[https] FAILED to set up the TLS certificate"); return false; }
+  uint8_t h[32]; char hex[4];
+  mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), crt, crtLen, h);
+  tlsFingerprint = "";
+  for (int i = 0; i < 32; i++) { snprintf(hex, sizeof(hex), i ? ":%02X" : "%02X", h[i]); tlsFingerprint += hex; }
+  return true;
+}
+
+static int tlsSend(void* ctx, const unsigned char* b, size_t n) {
+  int r = send(*(int*)ctx, b, n, 0);
+  return r >= 0 ? r : (errno == EAGAIN || errno == EWOULDBLOCK) ? MBEDTLS_ERR_SSL_TIMEOUT : MBEDTLS_ERR_NET_SEND_FAILED;
+}
+static int tlsRecv(void* ctx, unsigned char* b, size_t n) {
+  int r = recv(*(int*)ctx, b, n, 0);
+  return r >= 0 ? r : (errno == EAGAIN || errno == EWOULDBLOCK) ? MBEDTLS_ERR_SSL_TIMEOUT : MBEDTLS_ERR_NET_RECV_FAILED;
+}
+static bool tlsWriteAll(mbedtls_ssl_context* ssl, const uint8_t* p, size_t n) {
+  while (n) {
+    int r = mbedtls_ssl_write(ssl, p, n);
+    if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+    if (r <= 0) return false;
+    p += r; n -= r;
+  }
+  return true;
+}
+static bool sendAll(int fd, const uint8_t* p, size_t n) {
+  while (n) { int r = send(fd, p, n, 0); if (r <= 0) return false; p += r; n -= r; }
+  return true;
+}
+// One TLS connection: handshake, read the request head, rewrite it, relay to the dashboard.
+static void tlsServe(int fd, uint32_t peer) {
+  static const size_t HEAD_MAX = 4096;
+  static char head[HEAD_MAX + 1], out[HEAD_MAX + 160];   // tlsTask only
+  static uint8_t buf[1460];
+  mbedtls_ssl_context ssl; mbedtls_ssl_init(&ssl);
+  int in = -1, r;
+  do {
+    if (mbedtls_ssl_setup(&ssl, &tlsConf)) break;
+    mbedtls_ssl_set_bio(&ssl, &fd, tlsSend, tlsRecv, nullptr);
+    while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {}
+    if (r) break;                                   // e.g. the browser refusing the certificate until it's accepted
+    size_t len = 0; int end = -1;
+    while (end < 0 && len < HEAD_MAX) {
+      r = mbedtls_ssl_read(&ssl, (uint8_t*)head + len, HEAD_MAX - len);
+      if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
+      if (r <= 0) break;
+      len += r; head[len] = 0;
+      const char* e = strstr(head, "\r\n\r\n");
+      if (e) end = e - head + 4;
+    }
+    if (end < 0) {
+      if (len >= HEAD_MAX) {
+        static const char TOO_BIG[] = "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        tlsWriteAll(&ssl, (const uint8_t*)TOO_BIG, sizeof(TOO_BIG) - 1);
+      }
+      break;
+    }
+    // Request line, then our headers, then the browser's minus any X-C3-Peer / Connection.
+    const char* first = strstr(head, "\r\n");
+    size_t o = first - head + 2;
+    memcpy(out, head, o);
+    o += snprintf(out + o, sizeof(out) - o, "%s: %s %s\r\nConnection: close\r\n",
+                  PEER_HEADER, IPAddress(peer).toString().c_str(), peerToken);
+    for (const char* l = head + (first - head + 2); l < head + end - 2; ) {
+      const char* le = strstr(l, "\r\n");
+      size_t ll = le - l + 2;
+      if (strncasecmp(l, "X-C3-Peer:", 10) && strncasecmp(l, "Connection:", 11)) { memcpy(out + o, l, ll); o += ll; }
+      l += ll;
+    }
+    memcpy(out + o, "\r\n", 2); o += 2;
+
+    in = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(INNER_PORT); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (in < 0 || connect(in, (sockaddr*)&a, sizeof(a))) break;
+    timeval tv = { 30, 0 }; setsockopt(in, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (!sendAll(in, (const uint8_t*)out, o) || ((size_t)end < len && !sendAll(in, (const uint8_t*)head + end, len - end))) break;
+
+    // Relay both ways until the dashboard closes its side (it always does: Connection: close).
+    bool browserOpen = true; uint32_t idle = millis();
+    for (;;) {
+      bool buffered = browserOpen && mbedtls_ssl_get_bytes_avail(&ssl) > 0;
+      fd_set rf; FD_ZERO(&rf); FD_SET(in, &rf); if (browserOpen) FD_SET(fd, &rf);
+      timeval t = { 0, 200000 };
+      int s = buffered ? 1 : select(max(fd, in) + 1, &rf, nullptr, nullptr, &t);
+      if (s < 0) break;
+      if (s == 0) { if (millis() - idle > 30000) break; continue; }
+      if (buffered || FD_ISSET(fd, &rf)) {          // browser -> dashboard (request body)
+        r = mbedtls_ssl_read(&ssl, buf, sizeof(buf));
+        if (r > 0) { if (!sendAll(in, buf, r)) break; idle = millis(); }
+        else if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) { browserOpen = false; shutdown(in, SHUT_WR); }
+      }
+      if (!buffered && FD_ISSET(in, &rf)) {         // dashboard -> browser
+        r = recv(in, buf, sizeof(buf), 0);
+        if (r <= 0) break;                          // response complete
+        if (!tlsWriteAll(&ssl, buf, r)) break;
+        idle = millis();
+      }
+    }
+    mbedtls_ssl_close_notify(&ssl);
+  } while (false);
+  if (in >= 0) close(in);
+  mbedtls_ssl_free(&ssl);
+}
+static void tlsTask(void* arg) {
+  int ls = (int)(intptr_t)arg;
+  for (;;) {
+    sockaddr_in from; socklen_t fl = sizeof(from);
+    int fd = accept(ls, (sockaddr*)&from, &fl);
+    if (fd < 0) { delay(100); continue; }
+    timeval tv = { 10, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    tlsServe(fd, from.sin_addr.s_addr);
+    close(fd);
+  }
+}
+static bool startHttps() {
+  uint8_t t[16]; esp_fill_random(t, sizeof(t));
+  for (int i = 0; i < 16; i++) snprintf(peerToken + 2 * i, 3, "%02x", t[i]);
+  mbedtls_ssl_config_init(&tlsConf);
+  if (mbedtls_ssl_config_defaults(&tlsConf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) return false;
+  mbedtls_ssl_conf_rng(&tlsConf, hwRng, nullptr);
+  if (mbedtls_ssl_conf_own_cert(&tlsConf, &tlsCert, &tlsKey)) return false;
+  mbedtls_ssl_cache_init(&tlsCache); mbedtls_ssl_cache_set_max_entries(&tlsCache, 8);
+  mbedtls_ssl_conf_session_cache(&tlsConf, &tlsCache, mbedtls_ssl_cache_get, mbedtls_ssl_cache_set);
+  int ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP), one = 1;
+  if (ls < 0) return false;
+  setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(443); a.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (bind(ls, (sockaddr*)&a, sizeof(a)) || listen(ls, 4)) { close(ls); return false; }
+  // Stack: the ECDHE/ECDSA handshake needs a few KB of mbedtls stack on top of the relay.
+  return xTaskCreate(tlsTask, "https", 10240, (void*)(intptr_t)ls, 2, nullptr) == pdPASS;
+}
+// :80 only redirects to https, to the same name if it's one of ours, else to our IP.
+static void handleRedirect() {
+  WiFiClient c = httpRedirect.available();
+  if (!c) return;
+  c.setTimeout(1);
+  String host; uint32_t t0 = millis();
+  while (c.connected() && millis() - t0 < 1000) {
+    if (!c.available()) { delay(1); continue; }
+    String l = c.readStringUntil('\n'); l.trim();
+    if (!l.length()) break;
+    if (l.length() > 5 && l.substring(0, 5).equalsIgnoreCase("host:")) { host = l.substring(5); host.trim(); }
+  }
+  host.toLowerCase();
+  int colon = host.indexOf(':'); if (colon >= 0) host.remove(colon);
+  if (host.endsWith(".")) host.remove(host.length() - 1);
+  if (host != "c3adblock.local" && host != "c3adblock") host = WiFi.localIP().toString();
+  c.print("HTTP/1.1 301 Moved Permanently\r\nLocation: https://" + host + "/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+  c.stop();
+}
+
 // ---------- WiFi provisioning (captive portal) ----------
 // Try provisioned NVS creds first, then the compile-time secrets.h creds as a
 // fallback (so the maintainer's own device + source builders keep working). If
@@ -1232,6 +1487,36 @@ static void protectWifiPass() {
   Serial.println("[wifi] stored passphrase replaced with its derived key (PMK)");
 }
 
+// The setup AP is WPA2, so the WiFi and admin passwords typed into the setup page aren't
+// sent in the clear. Its password is random, made on first boot and kept in NVS ("setup",
+// which BOOT reset leaves alone) so it never changes. It's printed on the serial console at
+// every boot and every 15 s while the portal is open: the web flasher's "Logs & Console",
+// or `pio device monitor`.
+static String setupPass;
+static String setupApName() {
+  uint8_t mac[6]; WiFi.macAddress(mac);
+  char ap[24]; snprintf(ap, sizeof(ap), "C3-AdBlock-%02X%02X", mac[4], mac[5]);
+  return ap;
+}
+static void loadSetupPass() {                  // call with the radio on (hardware RNG)
+  prefs.begin("setup", false);
+  setupPass = prefs.getString("appass", "");
+  if (setupPass.length() < 8) {
+    static const char A[] = "abcdefghjkmnpqrstuvwxyz23456789";   // no 0/o, 1/l/i
+    char p[15];
+    for (int i = 0; i < 14; i++) p[i] = (i % 5 == 4) ? '-' : A[esp_random() % (sizeof(A) - 1)];
+    p[14] = 0;
+    setupPass = p; prefs.putString("appass", setupPass);
+  }
+  prefs.end();
+}
+static String tlsNote() {
+  if (!tlsFingerprint.length()) return "";
+  return "<p style='color:#8b949e;font-size:13px;margin-top:22px'>Afterwards the dashboard is at <b>https://c3adblock.local</b>. "
+         "Your browser will warn that the certificate isn't trusted: it's this device's own. Check that its SHA-256 "
+         "fingerprint is<br><code style='word-break:break-all'>" + tlsFingerprint + "</code><br>before you continue.</p>";
+}
+
 static void handlePortalRoot() {
   String cur = portalNeedsPass()
     ? String("<p style='color:#8b949e;margin:18px 0 0'>Current dashboard admin password (forgot it? hold <b>BOOT</b> while powering on):</p>"
@@ -1256,31 +1541,31 @@ static void handlePortalRoot() {
     "</p><input name=a type=password minlength=8 " + String(adminSet ? "" : "required ") +
     "autocomplete=new-password placeholder='Admin password' style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>"
     "<button style='width:100%;padding:12px;margin-top:8px;border-radius:6px;border:0;background:#3fb950;color:#000;font-weight:600;cursor:pointer'>Connect</button>"
-    "</form></body>";
-  web.send(200, "text/html", html);
+    "</form>" + tlsNote() + "</body>";
+  portalWeb.send(200, "text/html", html);
 }
 static void handleWifiSave() {
-  String ss = web.arg("s"), pw = web.arg("p"), ap = web.arg("a");
-  if (!ss.length()) { web.send(400, "text/plain", "missing WiFi name"); return; }
+  String ss = portalWeb.arg("s"), pw = portalWeb.arg("p"), ap = portalWeb.arg("a");
+  if (!ss.length()) { portalWeb.send(400, "text/plain", "missing WiFi name"); return; }
   if (portalNeedsPass()) {
     if (portalFails >= PORTAL_MAX_FAILS) {
-      web.send(429, "text/plain", "too many wrong passwords: power-cycle the device, or hold BOOT while powering on to reset it");
+      portalWeb.send(429, "text/plain", "too many wrong passwords: power-cycle the device, or hold BOOT while powering on to reset it");
       return;
     }
-    if (!verifyAdminPass(web.arg("c"))) {
+    if (!verifyAdminPass(portalWeb.arg("c"))) {
       portalFails++;
       Serial.printf("[setup] wrong current admin password (%u/%u)\n", portalFails, PORTAL_MAX_FAILS);
       delay(1000);
-      web.send(403, "text/plain", "wrong current admin password");
+      portalWeb.send(403, "text/plain", "wrong current admin password");
       return;
     }
   }
   if (ap.length() ? ap.length() < MIN_ADMIN_PASS : !adminSet) {
-    web.send(400, "text/plain", "admin password must be at least 8 characters"); return;
+    portalWeb.send(400, "text/plain", "admin password must be at least 8 characters"); return;
   }
   if (ap.length()) setAdminPass(ap, true);
   prefs.begin("wifi", false); prefs.putString("ssid", ss); prefs.putString("pass", pw); prefs.end();
-  web.send(200, "text/html", "<!doctype html><meta charset=utf-8><body style='font:16px system-ui;text-align:center;margin-top:60px'>"
+  portalWeb.send(200, "text/html", "<!doctype html><meta charset=utf-8><body style='font:16px system-ui;text-align:center;margin-top:60px'>"
                              "&#9989; Saved. Restarting and joining <b>" + htmlEscape(ss) + "</b>&hellip;<br><br>"
                              "Reconnect your phone to your normal WiFi, then find the box at <b>c3adblock.local</b>.</body>");
   delay(900); ESP.restart();
@@ -1290,23 +1575,26 @@ static void startConfigPortal() {
   int n = WiFi.scanNetworks();                 // scan while still in STA mode (no APSTA)
   portalOpts = "";
   for (int i = 0; i < n && i < 15; i++) portalOpts += "<option value='" + htmlEscape(WiFi.SSID(i)) + "'>";
-  uint8_t mac[6]; WiFi.macAddress(mac);
-  char ap[24]; snprintf(ap, sizeof(ap), "C3-AdBlock-%02X%02X", mac[4], mac[5]);
-  WiFi.mode(WIFI_AP); WiFi.softAP(ap);
+  String ap = setupApName();
+  WiFi.mode(WIFI_AP); WiFi.softAP(ap.c_str(), setupPass.c_str());
   IPAddress apIP = WiFi.softAPIP();
   dnsPortal.start(53, "*", apIP);              // catch-all -> phones pop the captive portal
-  web.on("/", handlePortalRoot);
-  web.on("/wifisave", HTTP_POST, handleWifiSave);
-  web.onNotFound(handlePortalRoot);            // any captive-portal probe -> the form
-  web.begin();
-  Serial.printf("\n[setup] No WiFi. Join open network \"%s\" and a setup page pops up (or http://%s)\n",
-                ap, apIP.toString().c_str());
+  portalWeb.on("/", handlePortalRoot);
+  portalWeb.on("/wifisave", HTTP_POST, handleWifiSave);
+  portalWeb.onNotFound(handlePortalRoot);            // any captive-portal probe -> the form
+  portalWeb.begin();
+  Serial.printf("\n[setup] No WiFi. Join \"%s\" (password %s) and a setup page pops up (or http://%s)\n",
+                ap.c_str(), setupPass.c_str(), apIP.toString().c_str());
   // A configured device that merely failed to join (router rebooting, weak signal) must not
   // get stuck here: if nobody is using the portal, reboot and retry WiFi every 3 minutes.
   const bool configured = hasCreds();
-  uint32_t t0 = millis();
+  uint32_t t0 = millis(), shown = millis();
   while (true) {
-    dnsPortal.processNextRequest(); web.handleClient(); delay(2);
+    dnsPortal.processNextRequest(); portalWeb.handleClient(); delay(2);
+    if (millis() - shown > 15000) {                                // for whoever opens the serial console late
+      shown = millis();
+      Serial.printf("[setup] setup WiFi \"%s\", password %s\n", ap.c_str(), setupPass.c_str());
+    }
     if (WiFi.softAPgetStationNum() > 0) t0 = millis();          // someone is setting it up
     if (configured && millis() - t0 > 180000UL) { Serial.println("[setup] retrying WiFi"); ESP.restart(); }
   }
@@ -1338,18 +1626,23 @@ void setup() {
       forcePortal = portalRecovery = true;
       Serial.println("[setup] BOOT held -> cleared saved WiFi + admin password"); } }
   loadAuth(); loadPhys();
+  WiFi.mode(WIFI_STA);                     // radio on first: the hardware RNG is only truly random with it running
+  loadSetupPass();
+  bool tlsReady = loadTlsCert();
+  Serial.printf("[setup] setup WiFi (if it's ever needed): \"%s\", password %s\n", setupApName().c_str(), setupPass.c_str());
+  if (tlsReady) Serial.printf("[https] certificate SHA-256 fingerprint: %s\n", tlsFingerprint.c_str());
 
   if (forcePortal || !connectWiFi()) startConfigPortal();   // portal blocks + reboots on save; returns only when connected
   Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
   protectWifiPass();
-  if (MDNS.begin("c3adblock")) { MDNS.addService("http", "tcp", 80); Serial.println("dashboard: http://c3adblock.local"); }
+  if (MDNS.begin("c3adblock")) { MDNS.addService("https", "tcp", 443); MDNS.addService("http", "tcp", 80); }
 
   if (!adminSet)
     Serial.println("[WARN] no admin password set: settings, uploads and OTA are locked. "
                    "Hold BOOT while powering on to run setup and choose one.");
 
   if (!startDns()) Serial.println("[dns] FAILED to start");
-  { const char* hdrs[] = { CSRF_HEADER }; web.collectHeaders(hdrs, 1); }  // needed for requireAuth()'s CSRF check
+  { const char* hdrs[] = { CSRF_HEADER, PEER_HEADER }; web.collectHeaders(hdrs, 2); }  // CSRF check + client address
   web.on("/", []() { if (requireHost()) web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
   web.on("/login", []() { if (requireAuth()) web.send(200, "text/plain", "ok"); });   // dashboard's Log in button: triggers the browser prompt
@@ -1414,7 +1707,10 @@ void setup() {
     updateIntervalH = (uint32_t)h;
     saveUpdateCfg(); web.send(200, "text/plain", "ok");
   });
-  web.begin();
+  web.begin();                             // loopback only; browsers come in through startHttps()
+  if (tlsReady && startHttps()) Serial.println("dashboard: https://c3adblock.local");
+  else Serial.println("[https] FAILED to start: the dashboard is unreachable");
+  httpRedirect.begin();
   if (CONFIRM_LED >= 0) { pinMode(CONFIRM_LED, OUTPUT); ledSet(false); }
   btnStable = btnLast = digitalRead(BOOT_PIN);
   if (otaHashHex.length()) {               // never run network OTA without a password
@@ -1422,7 +1718,7 @@ void setup() {
     ArduinoOTA.setPasswordHash(otaHashHex.c_str());
     ArduinoOTA.begin();
   }
-  Serial.printf("DNS :53 + dashboard :80%s up\n", otaHashHex.length() ? (physConfirm ? " + OTA (press BOOT to open)" : " + OTA") : "");
+  Serial.printf("DNS :53 + dashboard https :443%s up\n", otaHashHex.length() ? (physConfirm ? " + OTA (press BOOT to open)" : " + OTA") : "");
 }
 
 void loop() {
@@ -1430,7 +1726,8 @@ void loop() {
   // With physical confirmation on, espota only gets an answer for a minute after a BOOT
   // press. An accepted upload runs to completion inside this one handle() call.
   if (otaHashHex.length() && (!physConfirm || otaWindowOpen())) ArduinoOTA.handle();
-  web.handleClient();                     // DNS is served by its own task (dnsTask)
+  web.handleClient();                     // DNS is served by its own task (dnsTask), HTTPS by tlsTask
+  handleRedirect();
   if (!blockingOn && resumeAt && (int32_t)(millis() - resumeAt) >= 0) { blockingOn = true; resumeAt = 0; }
   if (updateUrl.length()) {               // periodic remote blocklist auto-update
     uint32_t now = millis();

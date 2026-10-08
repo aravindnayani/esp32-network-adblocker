@@ -55,9 +55,9 @@
     <ol>
       <li>Click <b>Connect &amp; Install</b> and pick your ESP32-C3's serial port.</li>
       <li>It flashes the firmware + a 141k-domain blocklist (~30s).</li>
-      <li>After it reboots, it makes a WiFi network called <code>C3-AdBlock-XXXX</code> — join it from your phone, pick your WiFi, type the password.</li>
+      <li>After it reboots, it makes a WiFi network called <code>C3-AdBlock-XXXX</code>. Its password is shown under <b>Logs &amp; Console</b> here (write it down). Join it from your phone, pick your WiFi, type the password.</li>
       <li>On the same page, choose a <b>dashboard admin password</b> (8+ characters, user name <code>admin</code>). It protects settings, blocklist uploads and firmware updates — until one is set, those stay locked.</li>
-      <li>Set it as your router's secondary DNS (or per-device), and ads are blocked network-wide. Dashboard at <code>c3adblock.local</code>.</li>
+      <li>Set it as your router's secondary DNS (or per-device), and ads are blocked network-wide. Dashboard at <code>https://c3adblock.local</code>: your browser will warn about the device's self-signed certificate; check its fingerprint matches the one on the setup page, then accept it.</li>
     </ol>
     <p class="note">No WiFi credentials or passwords are baked into this build — you set them on-device, privately.
       Forgot the admin password? Hold the <b>BOOT</b> button while powering on: it clears the saved WiFi and admin password and reopens the setup page.</p>

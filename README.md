@@ -163,14 +163,14 @@ safe to use.
   else is forwarded to Quad9 (`9.9.9.9`, changeable at build time).
 - 💾 **Hash-in-flash blocklist.** ~140k domains by default, up to ~250k with firmware OTA,
   ~537k with the single-app layout.
-- 📊 **Web dashboard** at `http://c3adblock.local`. Shows per-client block/allow counts,
+- 📊 **Web dashboard** at `https://c3adblock.local`. Shows per-client block/allow counts,
   RSSI, temperature, heap, and uptime.
 - ⏸️ **Pause blocking** for a set time (Pi-hole-style "disable for 5 minutes").
 - 🙅 **Ban a client** and **add/remove custom blocked domains** from the browser.
 - 📶 **Captive-portal WiFi setup.** No hard-coded credentials.
 - 🔄 **OTA everything.** Upload a blocklist or firmware from the dashboard, push firmware
   over WiFi with `espota`, or let the device fetch a blocklist URL on a schedule.
-- 🔐 **Hardened admin API.** Basic Auth, a CSRF header, a Host-header check, and no
+- 🔐 **Hardened admin API.** HTTPS, Basic Auth, a CSRF header, a Host-header check, and no
   default passwords.
 - ⚡ **One-click browser installer** (ESP Web Tools), built and deployed by CI.
 - 🧩 Runs on **ESP32-C3** (primary) and **classic ESP32** (`esp32dev`).
@@ -274,7 +274,7 @@ pio run -t upload
 pio run -t uploadfs
 
 # 4. Watch it boot and note the IP
-pio device monitor          # -> http://c3adblock.local
+pio device monitor          # -> setup WiFi password, certificate fingerprint, https://c3adblock.local
 ```
 
 For the classic ESP32, add `-e esp32dev` to the `pio` commands.
@@ -306,13 +306,21 @@ python3 tools/build_blocklist.py data/blocklist.bin \
 
 ## First-time setup
 
-If the device can't join WiFi, or nothing has been configured yet, it starts an open
-access point **`C3-AdBlock-XXXX`** with a captive portal:
+If the device can't join WiFi, or nothing has been configured yet, it starts a WPA2
+access point **`C3-AdBlock-XXXX`** with a captive portal. Its password is random, made on
+the device's first boot, and never changes (BOOT reset keeps it). It's printed on the serial
+console at every boot and every 15 s while the setup network is up: open **Logs & Console**
+in the web flasher, or run `pio device monitor`. Write it down; you'll need it again if
+the device ever reopens its setup network.
 
-1. Join it from a phone. The setup page opens automatically.
+1. Join it from a phone with that password. The setup page opens automatically.
 2. Pick your network and type its password.
 3. **Choose a dashboard admin password** (8+ characters; the user name is `admin`).
 4. Tap **Connect**. The device saves the settings, reboots, and joins your network.
+5. Open **https://c3adblock.local**. Your browser warns that the certificate isn't trusted,
+   because it's the device's own self-signed one. Check that its SHA-256 fingerprint matches
+   the one on the setup page and the serial console, then accept it. You only do this once
+   per browser.
 
 | To… | Do this |
 |---|---|
@@ -332,7 +340,7 @@ dig @<c3-ip> github.com        # -> real IP  (forwarded)
 
 ## Over-the-air updates
 
-The dashboard at **http://c3adblock.local** handles all of these (they require the admin
+The dashboard at **https://c3adblock.local** handles all of these (they require the admin
 password):
 
 - **Blocklist upload.** Drop a freshly built `blocklist.bin` into *Blocklist → Upload*.
@@ -430,16 +438,20 @@ is why the prebuilt browser-flasher image is safe: it contains no credentials.
 **Network OTA** (`ArduinoOTA`) requires `OTA_PASS`, or the admin password when `OTA_PASS`
 is the placeholder. With no password at all, it isn't started.
 
-**Basic Auth is a LAN-trust-boundary control, not encryption.** Everything is plain HTTP
-on :80; this chip has no realistic budget for a TLS server. Credentials are base64 on
-every authenticated request, so anyone who can already sniff your LAN (open/guest WiFi,
-ARP spoofing) can read them. This protects against the common cases: another device
-hitting the API without credentials, or a browser tab CSRF'ing it. It does not protect
-against an on-path attacker.
+**HTTPS.** The dashboard is only served over TLS on :443, so the admin password and
+everything else are encrypted on the LAN. Port 80 just redirects to https. The device makes
+its own ECDSA P-256 key and self-signed certificate on first boot and keeps them in NVS, so
+the certificate's fingerprint stays the same across reboots, updates and BOOT resets.
+Browsers warn about a self-signed certificate. Accept it only after checking the
+fingerprint (setup page or serial console); once it's accepted, an on-path attacker can't
+swap in their own without a new warning. Internally a small TLS front end relays each
+request to the dashboard's web server, which listens on loopback only. It passes the
+browser's address along with a per-boot secret, so the per-IP lockout and BOOT approvals
+still see the real client.
 
 **CSRF via cached Basic Auth.** Browsers attach cached Basic Auth credentials to *any*
 later request to that origin, including one fired by an unrelated page
-(`<img src="http://c3adblock.local/forgetwifi">`). The required custom header can only be
+(`<img src="https://c3adblock.local/forgetwifi">`). The required custom header can only be
 set by a same-origin `fetch()`, which is what the dashboard's own JS uses. This is also
 why `/forgetwifi` isn't a URL you can visit directly; use the dashboard button.
 
@@ -495,9 +507,10 @@ Only flash encryption fully protects these from someone holding the device. It i
 enabled because it permanently burns eFuses on the chip, and the browser flasher can't set
 it up. See Espressif's flash-encryption guide if you build from source and want it.
 
-**Out of scope:** the setup AP (`C3-AdBlock-XXXX`) is open by design, because it has to
-be joinable before any password exists. The WiFi and admin passwords typed into the
-portal are only as safe as that local radio link during the brief setup window.
+**Setup network.** The setup AP (`C3-AdBlock-XXXX`) is WPA2 with a random per-device
+password that only appears on the serial console, so the WiFi and admin passwords typed into
+the setup page are encrypted over the air. The page itself is plain HTTP inside that WPA2
+link.
 
 ## CI / GitHub Actions
 
