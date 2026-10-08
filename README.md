@@ -385,7 +385,11 @@ partition table (no firmware OTA). Choose in `partitions.csv`:
 
 ## Security
 
-Read-only views (`/`, `/stats.json`) stay open. Every state-changing endpoint requires
+The dashboard page (`/`) and a **summary** in `/stats.json` (totals, uptime, blocking on/off,
+whether a password is set) are open to the LAN. Everything else in `/stats.json`, meaning
+clients with their IPs and MACs, the custom list, the update URL and status, lockouts, pending
+approvals and the audit log, is only included for a logged-in admin. The dashboard shows a
+**Log in** button (`/login`) for it. Every state-changing endpoint requires
 **HTTP Basic Auth** (user `admin` plus the admin password) **and** the
 `X-Requested-With: c3-adblock` header **and** a valid `Host`:
 
@@ -415,8 +419,8 @@ password from any IP draws on one shared budget: a burst of about 20, refilling 
 guesses over many LAN addresses gains nothing. Because that can lock the owner out too, a
 BOOT press with nothing pending clears all lockouts (it's logged in the audit log).
 
-**Audit log.** The last 32 admin events, with client IP/MAC, are on the dashboard. Like the
-rest of `/stats.json`, it's readable without a password; it is in RAM only and is lost on reboot.
+**Audit log.** The last 32 admin events, with client IP/MAC, are on the dashboard once you
+log in. It is in RAM only and is lost on reboot.
 
 **No default passwords.** The placeholder values in `secrets.example.h` are public, so the
 firmware ignores them. Until an admin password is set (in the portal, or as a real value

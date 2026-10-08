@@ -22,6 +22,9 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <div id=credwarn style="display:none;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">
 ⚠️ <b>No admin password set.</b> Settings, uploads and firmware updates are locked. To set one, hold the <b>BOOT</b> button while powering the device on, then join its <code>C3-AdBlock-XXXX</code> WiFi and fill in the setup page.
 </div>
+<div id=glock style="display:none;margin-bottom:10px;padding:10px 14px;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;font-size:13px"></div>
+<div id=loginbar style="display:none;align-items:center;gap:12px;margin-bottom:14px;padding:12px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px">
+<span style=flex:1>🔒 Log in to see clients, custom domains, settings and the audit log. <span id=lockmsg class=b></span></span><button onclick=login()>Log in</button></div>
 <div id=blockbar style="display:flex;align-items:center;gap:12px;margin-bottom:14px;padding:12px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px">
 <span id=blockdot style=font-size:20px>🛡️</span><b id=blockstate style=flex:1 data-on=1>Blocking active</b>
 <select id=pausedur style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;padding:5px"><option value=30>30s</option><option value=300 selected>5 min</option><option value=1800>30 min</option><option value=0>until I re-enable</option></select>
@@ -29,6 +32,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <div id=confbar style="display:none;margin-bottom:14px;padding:12px 14px;background:#2d2410;border:1px solid #d29922;color:#f2cc60;border-radius:8px">
 👆 <b>Press the BOOT button on the device</b> to approve <b id=confwhat></b> <span id=confleft style=color:#8b949e></span></div>
 <div class=cards id=sys></div>
+<div id=admin style=display:none>
 <h2>CLIENTS</h2><table id=ct><thead><tr><th>Client</th><th>MAC</th><th>Blocked</th><th>Allowed</th><th></th></tr></thead><tbody></tbody></table>
 <h2>CUSTOM BLOCKED DOMAINS</h2>
 <div style=margin-bottom:8px><input id=dom placeholder="ads.example.com" size=30><button onclick=addDom()>Block domain</button></div>
@@ -48,10 +52,9 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <h2>SECURITY</h2>
 <div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL, Forget WiFi and pausing blocking for more than 30 min</label></div>
 <div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin></span></div>
-<div id=glock style="display:none;margin-bottom:10px;padding:10px 14px;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;font-size:13px"></div>
 <table id=lt><thead><tr><th>Locked out</th><th>MAC</th><th>Wrong passwords</th><th>Status</th></tr></thead><tbody></tbody></table>
 <table id=at><thead><tr><th>When</th><th>From</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
-</div><script>
+</div></div><script>
 function fmt(n){return n.toLocaleString()}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 // A plain <img>/<form> CSRF can't set a custom header, only same-origin fetch()
@@ -63,16 +66,21 @@ const CSRF_HDRS={'X-Requested-With':'c3-adblock'}
 async function togglePause(){if(blockstate.dataset.on!='1'){fetch('/resume',{headers:CSRF_HDRS}).then(load);return}
 let s=+pausedur.value;if((s==0||s>1800)&&!await gated('pause'))return;
 let r=await fetch('/pause?s='+s,{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
-async function load(){let s=await(await fetch('/stats.json')).json();
+// The summary is public; everything else in /stats.json only comes back when logged in.
+async function login(){let r=await fetch('/login',{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
+async function load(){let s=await(await fetch('/stats.json',{headers:CSRF_HDRS})).json();
 host.textContent='@ '+s.ip;
 credwarn.style.display=s.noauth?'block':'none';
 let on=s.blocking!==false;blockstate.dataset.on=on?'1':'0';
 blockdot.textContent=on?'🛡️':'⏸️';blockbar.style.borderColor=on?'#30363d':'#f0883e';
 blockstate.textContent=on?'Blocking active':(s.resumeIn>0?'Paused — resumes in '+s.resumeIn+'s':'Paused');
-pausebtn.textContent=on?'Pause':'Resume';pausedur.style.display=on?'':'none';
+pausebtn.textContent=on?'Pause':'Resume';pausebtn.style.display=s.admin?'':'none';pausedur.style.display=on&&s.admin?'':'none';
 sys.innerHTML=[['Total blocked',fmt(s.blocked),'b'],['Total allowed',fmt(s.allowed),'a'],...(s.foreign?[['Dropped (non-local)',fmt(s.foreign),'b']]:[]),['Blocklist',fmt(s.domains)+' domains',''],
-['Clients',s.clients.length,''],['WiFi',s.rssi+' dBm',''],['Temp',s.temp+' °C',''],['Free RAM',Math.round(s.heap/1024)+' KB',''],['Uptime',s.uptime,'']]
+['Clients',s.nclients,''],['WiFi',s.rssi+' dBm',''],['Temp',s.temp+' °C',''],['Free RAM',Math.round(s.heap/1024)+' KB',''],['Uptime',s.uptime,'']]
 .map(c=>`<div class=card><div class="v ${c[2]}">${c[1]}</div><div class=l>${c[0]}</div></div>`).join('');
+glock.style.display=s.globalLock?'block':'none';glock.textContent=s.globalLock?'⛔ Too many wrong passwords across the network: every device is refused for '+s.globalLock+'s. Press BOOT on the device to clear it.':'';
+loginbar.style.display=s.admin||s.noauth?'none':'flex';lockmsg.textContent=s.locked?'Locked for '+s.locked+'s after wrong passwords.':'';
+admin.style.display=s.admin?'':'none';if(!s.admin){showConf(null);return}
 ct.tBodies[0].innerHTML=s.clients.sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a.allowed)).map(c=>
 `<tr><td>${c.ip}${c.banned?' <span class=tag style=color:#f85149>BANNED</span>':''}</td><td>${c.mac}</td>
 <td class=b>${fmt(c.blocked)}</td><td class=a>${fmt(c.allowed)}</td>
@@ -80,7 +88,6 @@ ct.tBodies[0].innerHTML=s.clients.sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a
 cl.tBodies[0].innerHTML=s.custom.map(d=>`<tr><td>${esc(d)}</td><td style=text-align:right><button class=rmbtn data-d="${esc(d)}">remove</button></td></tr>`).join('')||'<tr><td style=color:#8b949e>none yet</td></tr>';
 physcb.checked=!!s.phys;otawin.textContent=s.otaWin?'Network OTA open for '+s.otaWin+'s.':'';
 showConf(s.confirm);
-glock.style.display=s.globalLock?'block':'none';glock.textContent=s.globalLock?'⛔ Too many wrong passwords across the network: every device is refused for '+s.globalLock+'s. Press BOOT on the device to clear it.':'';
 lt.style.display=s.lockouts.length?'':'none';
 lt.tBodies[0].innerHTML=s.lockouts.map(l=>`<tr><td>${esc(l.ip)}</td><td>${esc(l.mac)}</td><td class=b>${l.fails}</td><td>${l.lockedFor?'<span class=b>locked, '+l.lockedFor+'s left</span>':'not locked yet'}</td></tr>`).join('');
 at.tBodies[0].innerHTML=s.audit.map(a=>`<tr><td>${ago(a.ago)}</td><td>${esc(a.ip)}${a.mac?'<br><span style=color:#8b949e>'+esc(a.mac)+'</span>':''}</td><td>${esc(a.what)}</td><td>${esc(a.detail)}</td></tr>`).join('')||'<tr><td colspan=4 style=color:#8b949e>no admin activity since boot</td></tr>';
@@ -98,7 +105,7 @@ let upurlNow='';
 async function gated(a){let r=await fetch('/confirm?a='+a,{headers:CSRF_HDRS}),t=await r.text();
 if(!r.ok){alert(t);return false}if(t=='approved')return true;
 for(let i=0;i<40;i++){await new Promise(z=>setTimeout(z,800));
-let c=(await(await fetch('/stats.json')).json()).confirm;showConf(c);
+let c=(await(await fetch('/stats.json',{headers:CSRF_HDRS})).json()).confirm;showConf(c);
 if(!c||c.a!=a){alert('Not confirmed: the BOOT button was not pressed in time.');return false}
 if(c.state=='approved'){showConf(null);return true}}
 return false}

@@ -807,23 +807,34 @@ static void confirmLoop() {
   }
   ledSet(waiting ? (millis() / 150) & 1 : otaWindowOpen() ? (millis() / 600) & 1 : false);
 }
+// Anyone on the LAN can see the summary (totals, uptime, blocking on/off, whether a password
+// is set). Who is on the network (IPs, MACs, per-client counts), the custom list, the update
+// URL, lockouts, pending approvals and the audit log only go to a logged-in admin.
 static void handleStats() {
-  if (!requireHost()) return;
+  AuthResult r = checkAuth();
+  if (r == AUTH_HOST) { sendAuthError(r); return; }
+  // Wrong stored credentials (e.g. after a BOOT reset): ask again rather than answering with
+  // the summary, so the browser drops them instead of resending them on every poll.
+  if (r == AUTH_PROMPT && web.hasHeader("Authorization")) { web.requestAuthentication(); return; }
+  bool admin = r == AUTH_OK;
   StateLock lock;
   uint32_t up = millis() / 1000;
   char ut[24]; snprintf(ut, sizeof(ut), "%lud %luh %lum", up/86400, (up%86400)/3600, (up%3600)/60);
   String j = "{\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + totalBlocked + ",\"allowed\":" + totalAllowed + ",\"foreign\":" + totalForeign +
              ",\"domains\":" + numHashes + ",\"rssi\":" + WiFi.RSSI() + ",\"temp\":" + String(temperatureRead(), 1) +
              ",\"heap\":" + ESP.getFreeHeap() + ",\"uptime\":\"" + ut + "\"" +
-             ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt && (int32_t)(resumeAt - millis()) > 0 ? (resumeAt - millis()) / 1000 : 0) +
              ",\"noauth\":" + (adminPass.length() ? "false" : "true") +
-             ",\"phys\":" + (physConfirm ? "true" : "false") + ",\"otaWin\":" + (otaWindowOpen() ? (otaWindowUntil - millis()) / 1000 + 1 : 0);
+             ",\"nclients\":" + numClients + ",\"globalLock\":" + String(globalLockedFor()) +
+             ",\"locked\":" + String(r == AUTH_LOCKED ? max(lockedFor(clientIp()), globalLockedFor()) : 0) +
+             ",\"admin\":" + (admin ? "true" : "false");
+  if (!admin) { web.send(200, "application/json", j + "}"); return; }
+  j += ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
+       ",\"phys\":" + (physConfirm ? "true" : "false") + ",\"otaWin\":" + (otaWindowOpen() ? (otaWindowUntil - millis()) / 1000 + 1 : 0);
   if (confirmActive())
     j += ",\"confirm\":{\"a\":\"" + String(pend.action) + "\",\"ip\":\"" + IPAddress(pend.ip).toString() +
          "\",\"state\":\"" + (pend.approved ? "approved" : "pending") + "\",\"left\":" + ((pend.until - millis()) / 1000 + 1) + "}";
-  j += ",\"globalLock\":" + String(globalLockedFor());
   j += ",\"lockouts\":[";
   bool first = true;
   for (int i = 0; i < LOCK_SLOTS; i++) {
@@ -1241,6 +1252,7 @@ void setup() {
   { const char* hdrs[] = { CSRF_HEADER }; web.collectHeaders(hdrs, 1); }  // needed for requireAuth()'s CSRF check
   web.on("/", []() { if (requireHost()) web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
+  web.on("/login", []() { if (requireAuth()) web.send(200, "text/plain", "ok"); });   // dashboard's Log in button: triggers the browser prompt
   web.on("/ban", handleBan);
   web.on("/addblock", []() {
     if (!requireAuth()) return;
