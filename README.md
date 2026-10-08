@@ -252,6 +252,11 @@ You flash over USB once. After that, **firmware and blocklist both update over W
 > ⚠️ Use a **current PlatformIO**: the VS Code PlatformIO extension's bundled core, or
 > `pip install -U platformio` in a venv. The distro/apt `platformio` package (e.g. 4.3.4)
 > is too old and fails with `AttributeError: ... 'resultcallback'`.
+>
+> For the exact build CI produces, install the pinned, hash-checked PlatformIO in a venv with
+> `pip install --require-hashes -r tools/requirements-ci.txt`. The platform, Arduino framework,
+> toolchains and tools are pinned to exact versions in `platformio.ini`, and the GitHub Actions
+> are pinned to commit SHAs.
 
 ```bash
 # 1. Copy the secrets template (gitignored). Everything in it is OPTIONAL:
