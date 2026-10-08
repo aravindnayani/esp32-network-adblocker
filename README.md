@@ -457,6 +457,11 @@ and Host checks above.
 
 **XSS.** Custom domains, SSIDs, and WiFi names are HTML-escaped before rendering.
 
+**Input validation.** Custom domains must be plain hostnames (letters, digits, `-`, `_`,
+dot-separated labels of up to 63 characters, 253 total); `/addblock` returns `400` with the
+reason otherwise. The update URL can't contain spaces or control characters, and every string
+in `/stats.json` has control characters escaped, so nothing stored can break the dashboard.
+
 **Out of scope:** the setup AP (`C3-AdBlock-XXXX`) is open by design, because it has to
 be joinable before any password exists. The WiFi and admin passwords typed into the
 portal are only as safe as that local radio link during the brief setup window.

@@ -102,7 +102,7 @@ if(c.state=='approved'){showConf(null);return true}}
 return false}
 async function setPhys(){let on=physcb.checked;if(!on&&!await gated('phys')){physcb.checked=true;return}
 let r=await fetch('/setphys?on='+(on?1:0),{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
-function addDom(){let d=dom.value.trim();if(d){fetch('/addblock?d='+encodeURIComponent(d),{headers:CSRF_HDRS}).then(()=>{dom.value='';load()})}}
+function addDom(){let d=dom.value.trim();if(d){fetch('/addblock?d='+encodeURIComponent(d),{headers:CSRF_HDRS}).then(async r=>{if(r.ok)dom.value='';else alert(await r.text());load()})}}
 ct.addEventListener('click',e=>{if(e.target.classList.contains('ban'))fetch('/ban?ip='+e.target.dataset.ip,{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})});
 cl.addEventListener('click',e=>{if(e.target.classList.contains('rmbtn'))fetch('/unblock?d='+encodeURIComponent(e.target.dataset.d),{headers:CSRF_HDRS}).then(load)});
 async function saveUpd(){if(uurl.value.trim()!=upurlNow&&!await gated('setupdate'))return;fetch('/setupdate?u='+encodeURIComponent(uurl.value.trim())+'&h='+(parseInt(uiv.value)||24),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})}

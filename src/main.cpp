@@ -220,23 +220,53 @@ static bool isBlocked(const char* domain) {
 }
 
 // ---------- persistence ----------
+// Normalize a custom domain the way queries are matched (lowercase, no "www.", no
+// leading "*." / "." or trailing dot) and check it's a plain hostname: letters, digits,
+// '-' and '_', dot-separated labels of 1-63 chars, at least two labels, 253 chars max.
+// Anything else can't match a query anyway, and control characters or quotes would
+// break /custom.txt (one domain per line) and the dashboard's JSON.
+static const char* normDomain(String& d) {
+  d.trim(); d.toLowerCase();
+  while (d.startsWith("*.") || d.startsWith(".")) d.remove(0, d.startsWith("*.") ? 2 : 1);
+  if (d.endsWith(".")) d.remove(d.length() - 1);
+  if (d.startsWith("www.")) d.remove(0, 4);
+  if (!d.length()) return "enter a domain, like ads.example.com";
+  if (d.length() > 253) return "domain is longer than 253 characters";
+  int label = 0, dots = 0;
+  for (char ch : d) {
+    if (ch == '.') {
+      if (!label) return "empty label (two dots in a row?)";
+      dots++; label = 0;
+    } else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {
+      if (++label > 63) return "a label is longer than 63 characters";
+    } else {
+      return "only letters, digits, '-', '_' and '.' are allowed (enter a domain, not a URL)";
+    }
+  }
+  if (!dots) return "needs at least one dot, like example.com";
+  return nullptr;
+}
 static void loadCustom() {
   numCustom = 0; File f = LittleFS.open("/custom.txt", "r"); if (!f) return;
   while (f.available() && numCustom < MAX_CUSTOM) {
-    String l = f.readStringUntil('\n'); l.trim(); l.toLowerCase();
-    if (l.length() && l.indexOf('.') > 0) { customDom[numCustom] = l; customHash[numCustom] = fnv40(l.c_str(), l.length()); numCustom++; }
+    String l = f.readStringUntil('\n');
+    if (normDomain(l)) continue;                   // skips blank lines and anything older firmware let in
+    bool dup = false;
+    for (int i = 0; i < numCustom; i++) if (customDom[i] == l) { dup = true; break; }
+    if (!dup) { customDom[numCustom] = l; customHash[numCustom] = fnv40(l.c_str(), l.length()); numCustom++; }
   }
   f.close();
 }
 static void saveCustom() { File f = LittleFS.open("/custom.txt", "w"); if (!f) return; for (int i = 0; i < numCustom; i++) f.println(customDom[i]); f.close(); }
-static bool addCustom(String d) {
-  d.trim(); d.toLowerCase(); if (d.startsWith("www.")) d = d.substring(4);
-  if (!d.length() || d.indexOf('.') < 0 || numCustom >= MAX_CUSTOM) return false;
-  for (int i = 0; i < numCustom; i++) if (customDom[i] == d) return false;
-  customDom[numCustom] = d; customHash[numCustom] = fnv40(d.c_str(), d.length()); numCustom++; saveCustom(); return true;
+// Returns nullptr on success, else why it was refused. d is normalized in place.
+static const char* addCustom(String& d) {
+  if (const char* why = normDomain(d)) return why;
+  for (int i = 0; i < numCustom; i++) if (customDom[i] == d) return "already blocked";
+  if (numCustom >= MAX_CUSTOM) return "custom list is full (200 domains)";
+  customDom[numCustom] = d; customHash[numCustom] = fnv40(d.c_str(), d.length()); numCustom++; saveCustom(); return nullptr;
 }
-static void removeCustom(String d) {
-  d.toLowerCase();
+static void removeCustom(String& d) {
+  if (normDomain(d)) return;                       // invalid: can't be in the list
   for (int i = 0; i < numCustom; i++) if (customDom[i] == d) {
     for (int j = i; j < numCustom - 1; j++) { customDom[j] = customDom[j+1]; customHash[j] = customHash[j+1]; }
     numCustom--; saveCustom(); return;
@@ -487,7 +517,15 @@ static bool startDns() {
 
 // ---------- web ----------
 static String macStr(const uint8_t* m) { char s[18]; snprintf(s, sizeof(s), "%02x:%02x:%02x:%02x:%02x:%02x", m[0],m[1],m[2],m[3],m[4],m[5]); return String(s); }
-static String jesc(const String& s) { String o; for (char ch : s) { if (ch == '"' || ch == '\\') o += '\\'; o += ch; } return o; }
+static String jesc(const String& s) {          // JSON string body: quotes, backslash, control chars
+  String o; o.reserve(s.length());
+  for (char ch : s) {
+    if (ch == '"' || ch == '\\') { o += '\\'; o += ch; }
+    else if ((uint8_t)ch < 0x20) { char u[7]; snprintf(u, sizeof(u), "\\u%04x", (uint8_t)ch); o += u; }
+    else o += ch;
+  }
+  return o;
+}
 // HTML text/attribute escaping for the setup portal. jesc() covers JSON (stats
 // endpoint); the portal builds HTML, and its inputs — a scanned SSID, the
 // submitted WiFi name — are attacker-controllable during provisioning (the
@@ -1172,7 +1210,13 @@ void setup() {
   web.on("/", []() { if (requireHost()) web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
   web.on("/ban", handleBan);
-  web.on("/addblock", []() { if (!requireAuth()) return; String d = web.arg("d"); { StateLock lock; addCustom(d); } audit("block domain", d); web.send(200, "text/plain", "ok"); });
+  web.on("/addblock", []() {
+    if (!requireAuth()) return;
+    String d = web.arg("d"); const char* why;
+    { StateLock lock; why = addCustom(d); }
+    if (why) { web.send(400, "text/plain", why); return; }
+    audit("block domain", d); web.send(200, "text/plain", "ok");
+  });
   web.on("/unblock", []() { if (!requireAuth()) return; String d = web.arg("d"); { StateLock lock; removeCustom(d); } audit("unblock domain", d); web.send(200, "text/plain", "ok"); });
   web.on("/pause", []() {                    // /pause?s=300  (0 or absent = indefinite)
     if (!requireAuth()) return;
@@ -1210,6 +1254,9 @@ void setup() {
     if (web.hasArg("u")) {
       u = web.arg("u"); u.trim();
       if (u.length() && !u.startsWith("https://")) { web.send(400, "text/plain", "update URL must start with https://"); return; }
+      for (char ch : u) if ((uint8_t)ch <= 0x20 || (uint8_t)ch == 0x7f) {   // /update.cfg is line-based
+        web.send(400, "text/plain", "update URL must not contain spaces or control characters"); return;
+      }
     }
     long h = web.hasArg("h") ? web.arg("h").toInt() : (long)updateIntervalH;
     if (h < (long)UPDATE_MIN_H || h > (long)UPDATE_MAX_H) {   // checked before a press is used up
