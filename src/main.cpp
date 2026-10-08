@@ -17,6 +17,11 @@
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
 #include "lwip/sockets.h"
+#include "esp_wifi.h"           // AP auth mode, for storing a derived WiFi key
+#include "mbedtls/md.h"         // password hashing (PBKDF2), SHA-256
+#include "mbedtls/pkcs5.h"
+#include "mbedtls/base64.h"
+#include <MD5Builder.h>         // espota's password hash
 #include "ca_bundle.h"  // trusted roots for HTTPS blocklist downloads (tools/gen_ca_bundle.py)
 #include "secrets.h"   // WIFI_SSID / WIFI_PASS — used only as a FALLBACK if no creds
                        // have been provisioned via the captive portal (copy secrets.example.h)
@@ -94,11 +99,13 @@ uint8_t     portalFails = 0;        // wrong current-password attempts since boo
 static const uint8_t PORTAL_MAX_FAILS = 5;
 
 // Admin auth. Prebuilt (web-flasher) images only have the placeholder secrets.h, whose
-// passwords are public, so the real ones are set in the setup portal and kept in NVS.
-// A non-placeholder secrets.h still works for source builders. With neither, every
-// state-changing endpoint stays locked and network OTA is not started at all.
-String adminPass;                   // web dashboard password ("" = none set -> locked)
-String otaPass;                     // ArduinoOTA password ("" = OTA disabled)
+// passwords are public, so the real ones are set in the setup portal and kept in NVS --
+// as a salted hash, never in plaintext (see "admin password" below). A non-placeholder
+// secrets.h still works for source builders. With neither, every state-changing endpoint
+// stays locked and network OTA is not started at all.
+bool    adminSet = false;           // an admin password exists (false -> locked)
+uint8_t adminSalt[16], adminHash[32];
+String  otaHashHex;                 // MD5 hex for ArduinoOTA ("" = OTA disabled)
 static const size_t MIN_ADMIN_PASS = 8;
 
 // blocking pause (Pi-hole-style "disable for a while")
@@ -683,15 +690,97 @@ static bool clearAllLockouts() {           // true if anything was locked or cou
   return any;
 }
 
+// ---------- admin password ----------
+// NVS "auth" keeps a random 16-byte salt and PBKDF2-HMAC-SHA256(password, salt) ("salt",
+// "hash"), so dumping the flash doesn't hand over the password. Network OTA is the
+// exception: espota's challenge protocol needs MD5(password) on the device ("otamd5"), and
+// ArduinoOTA can't use anything slower. That MD5 is unsalted and fast to brute-force, so a
+// weak admin password can still be recovered from a flash dump: use a long one, or enable
+// flash encryption (README). Older firmware stored the password itself ("pass"); loadAuth()
+// converts that on first boot.
+static const uint32_t ADMIN_ITER = 10000;
+static bool isPlaceholder(const char* s, const char* placeholder) { return !s || !*s || strcmp(s, placeholder) == 0; }
+static bool pbkdf2(mbedtls_md_type_t t, const uint8_t* pw, size_t pwl, const uint8_t* salt, size_t sl,
+                   uint32_t iter, uint8_t* out, size_t outl) {
+  mbedtls_md_context_t ctx; mbedtls_md_init(&ctx);
+  bool ok = mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(t), 1) == 0 &&
+            mbedtls_pkcs5_pbkdf2_hmac(&ctx, pw, pwl, salt, sl, iter, outl, out) == 0;
+  mbedtls_md_free(&ctx);
+  return ok;
+}
+static bool ctEqual(const uint8_t* a, const uint8_t* b, size_t n) {   // constant time
+  uint8_t d = 0; for (size_t i = 0; i < n; i++) d |= a[i] ^ b[i]; return d == 0;
+}
+static String md5Hex(const String& s) { MD5Builder m; m.begin(); m.add(s); m.calculate(); return m.toString(); }
+static bool deriveAdmin(const String& pw, const uint8_t* salt, uint8_t* out) {
+  return pbkdf2(MBEDTLS_MD_SHA256, (const uint8_t*)pw.c_str(), pw.length(), salt, 16, ADMIN_ITER, out, 32);
+}
+static bool verifyAdminPass(const String& pw) {
+  uint8_t h[32];
+  return adminSet && deriveAdmin(pw, adminSalt, h) && ctEqual(h, adminHash, 32);
+}
+// Hash `pw` as the admin password; with persist, also save it (replacing any plaintext).
+static void setAdminPass(const String& pw, bool persist) {
+  esp_fill_random(adminSalt, sizeof(adminSalt));
+  adminSet = deriveAdmin(pw, adminSalt, adminHash);
+  if (!adminSet || !persist) return;
+  prefs.begin("auth", false);
+  prefs.putBytes("salt", adminSalt, sizeof(adminSalt)); prefs.putBytes("hash", adminHash, sizeof(adminHash));
+  prefs.putString("otamd5", md5Hex(pw)); prefs.remove("pass");
+  prefs.end();
+}
+// NVS (set in the portal) wins; a real secrets.h value is the fallback for source builds.
+static void loadAuth() {
+  adminSet = false;
+  String otaMd5;
+  prefs.begin("auth", true);
+  String legacy = prefs.getString("pass", "");
+  if (prefs.getBytesLength("salt") == sizeof(adminSalt) && prefs.getBytesLength("hash") == sizeof(adminHash)) {
+    prefs.getBytes("salt", adminSalt, sizeof(adminSalt)); prefs.getBytes("hash", adminHash, sizeof(adminHash));
+    otaMd5 = prefs.getString("otamd5", "");
+    adminSet = true;
+  }
+  prefs.end();
+  if (legacy.length()) {                         // plaintext from older firmware: hash it, then drop it
+    if (!adminSet) { setAdminPass(legacy, true); otaMd5 = md5Hex(legacy); Serial.println("[auth] stored admin password converted to a salted hash"); }
+    else { prefs.begin("auth", false); prefs.remove("pass"); prefs.end(); }
+  }
+  if (!adminSet && !isPlaceholder(WEB_PASS, "CHANGE_ME_WEB_PASSWORD")) { setAdminPass(WEB_PASS, false); otaMd5 = md5Hex(WEB_PASS); }
+  otaHashHex = isPlaceholder(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") ? (adminSet ? otaMd5 : String("")) : md5Hex(OTA_PASS);
+}
+// Basic Auth checked against the hash. PBKDF2 takes a noticeable fraction of a second, so a
+// header that verified once is remembered (its SHA-256, in RAM) and the dashboard's polling
+// doesn't pay for it every 3 s. Only Basic is accepted: Digest would need the password.
+static uint8_t goodAuth[32]; static bool goodAuthSet = false;
+static bool basicAuthOk() {
+  if (!adminSet || !web.hasHeader("Authorization")) return false;
+  String b = web.header("Authorization");
+  if (!b.startsWith("Basic ")) return false;
+  b = b.substring(6); b.trim();
+  if (!b.length() || b.length() > 252) return false;
+  uint8_t d[32];
+  if (mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), (const uint8_t*)b.c_str(), b.length(), d)) return false;
+  if (goodAuthSet && ctEqual(d, goodAuth, 32)) return true;
+  uint8_t raw[192]; size_t n = 0;
+  if (mbedtls_base64_decode(raw, sizeof(raw) - 1, &n, (const uint8_t*)b.c_str(), b.length())) return false;
+  raw[n] = 0;
+  char* colon = (char*)memchr(raw, ':', n);
+  bool ok = false;
+  if (colon) { *colon = 0; ok = strcmp((char*)raw, WEB_USER) == 0 && verifyAdminPass(String(colon + 1)); }
+  memset(raw, 0, sizeof(raw));
+  if (ok) { memcpy(goodAuth, d, 32); goodAuthSet = true; }
+  return ok;
+}
+
 // ---------- auth ----------
 enum AuthResult { AUTH_OK, AUTH_HOST, AUTH_NOPASS, AUTH_CSRF, AUTH_LOCKED, AUTH_PROMPT, AUTH_CONFIRM };
 static AuthResult checkAuth() {
   if (!hostOk()) return AUTH_HOST;
-  if (!adminPass.length()) return AUTH_NOPASS;
+  if (!adminSet) return AUTH_NOPASS;
   if (web.header(CSRF_HEADER) != CSRF_VALUE) return AUTH_CSRF;
   uint32_t ip = clientIp();
   if (lockedFor(ip) || globalLockedFor()) return AUTH_LOCKED;
-  if (web.authenticate(WEB_USER, adminPass.c_str())) { clearAuthFails(ip); return AUTH_OK; }
+  if (basicAuthOk()) { clearAuthFails(ip); return AUTH_OK; }
   if (web.hasHeader("Authorization")) { recordAuthFail(ip); recordGlobalFail(); }
   return AUTH_PROMPT;
 }
@@ -799,7 +888,7 @@ static void confirmLoop() {
       waiting = false;
     } else {
       if (clearAllLockouts()) auditIp(0, "BOOT pressed", "login lockouts cleared");
-      if (physConfirm && otaPass.length()) {
+      if (physConfirm && otaHashHex.length()) {
         otaWindowUntil = millis() + OTA_WINDOW_MS;
         auditIp(0, "BOOT pressed", "network OTA open for 60 s");
       }
@@ -825,7 +914,7 @@ static void handleStats() {
              ",\"heap\":" + ESP.getFreeHeap() + ",\"uptime\":\"" + ut + "\"" +
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt && (int32_t)(resumeAt - millis()) > 0 ? (resumeAt - millis()) / 1000 : 0) +
-             ",\"noauth\":" + (adminPass.length() ? "false" : "true") +
+             ",\"noauth\":" + (adminSet ? "false" : "true") +
              ",\"nclients\":" + numClients + ",\"globalLock\":" + String(globalLockedFor()) +
              ",\"locked\":" + String(r == AUTH_LOCKED ? max(lockedFor(clientIp()), globalLockedFor()) : 0) +
              ",\"admin\":" + (admin ? "true" : "false");
@@ -1099,13 +1188,6 @@ static void handleFwUpload() {
 // Try provisioned NVS creds first, then the compile-time secrets.h creds as a
 // fallback (so the maintainer's own device + source builders keep working). If
 // neither connects, fall through to the config portal.
-static bool isPlaceholder(const char* s, const char* placeholder) { return !s || !*s || strcmp(s, placeholder) == 0; }
-// NVS (set in the portal) wins; a real secrets.h value is the fallback for source builds.
-static void loadAuth() {
-  prefs.begin("auth", true); adminPass = prefs.getString("pass", ""); prefs.end();
-  if (!adminPass.length() && !isPlaceholder(WEB_PASS, "CHANGE_ME_WEB_PASSWORD")) adminPass = WEB_PASS;
-  otaPass = isPlaceholder(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") ? adminPass : String(OTA_PASS);
-}
 static bool hasCreds() {
   prefs.begin("wifi", true); bool nvs = prefs.getString("ssid", "").length() > 0; prefs.end();
   return nvs || (WIFI_SSID && *WIFI_SSID && strcmp(WIFI_SSID, "YOUR_WIFI_SSID") != 0);
@@ -1126,11 +1208,28 @@ static bool connectWiFi() {
   return WiFi.status() == WL_CONNECTED;
 }
 
-static bool portalNeedsPass() { return adminPass.length() && !portalRecovery; }
-static bool sameSecret(const String& a, const String& b) {   // no early exit on the first mismatch
-  uint8_t d = a.length() != b.length();
-  for (size_t i = 0; i < a.length(); i++) d |= (uint8_t)a[i] ^ (uint8_t)(i < b.length() ? b[i] : 0);
-  return d == 0;
+static bool portalNeedsPass() { return adminSet && !portalRecovery; }
+
+// Once joined, swap a stored WPA/WPA2 passphrase for the key derived from it (PMK =
+// PBKDF2-HMAC-SHA1(passphrase, SSID, 4096), 64 hex digits, which ESP-IDF accepts in place of
+// the passphrase). The key still joins this network, but the passphrase, often reused for
+// other things, is no longer on the device. WPA3-only networks (SAE) need the passphrase
+// itself, so they keep it. Only NVS credentials are touched, never secrets.h.
+static void protectWifiPass() {
+  prefs.begin("wifi", true);
+  String ss = prefs.getString("ssid", ""), pw = prefs.getString("pass", "");
+  prefs.end();
+  if (!ss.length() || pw.length() < 8 || pw.length() > 63 || WiFi.SSID() != ss) return;   // none, open, already a key
+  wifi_ap_record_t ap;
+  if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return;
+  if (ap.authmode != WIFI_AUTH_WPA_PSK && ap.authmode != WIFI_AUTH_WPA2_PSK &&
+      ap.authmode != WIFI_AUTH_WPA_WPA2_PSK && ap.authmode != WIFI_AUTH_WPA2_WPA3_PSK) return;
+  uint8_t pmk[32];
+  if (!pbkdf2(MBEDTLS_MD_SHA1, (const uint8_t*)pw.c_str(), pw.length(), (const uint8_t*)ss.c_str(), ss.length(), 4096, pmk, 32)) return;
+  char hex[65];
+  for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", pmk[i]);
+  prefs.begin("wifi", false); prefs.putString("pass", hex); prefs.end();
+  Serial.println("[wifi] stored passphrase replaced with its derived key (PMK)");
 }
 
 static void handlePortalRoot() {
@@ -1151,10 +1250,10 @@ static void handlePortalRoot() {
     "<input name=p type=password placeholder='Password' style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>" +
     cur +
     "<p style='color:#8b949e;margin:18px 0 0'>" +
-    (adminPass.length()
+    (adminSet
       ? String("New dashboard admin password (leave blank to keep the current one):")
       : "Choose a dashboard admin password (8+ characters). It protects firmware updates and settings; user name is <b>" + htmlEscape(WEB_USER) + "</b>.") +
-    "</p><input name=a type=password minlength=8 " + String(adminPass.length() ? "" : "required ") +
+    "</p><input name=a type=password minlength=8 " + String(adminSet ? "" : "required ") +
     "autocomplete=new-password placeholder='Admin password' style='width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border-radius:6px;border:1px solid #30363d;background:#161b22;color:#c9d1d9'>"
     "<button style='width:100%;padding:12px;margin-top:8px;border-radius:6px;border:0;background:#3fb950;color:#000;font-weight:600;cursor:pointer'>Connect</button>"
     "</form></body>";
@@ -1168,7 +1267,7 @@ static void handleWifiSave() {
       web.send(429, "text/plain", "too many wrong passwords: power-cycle the device, or hold BOOT while powering on to reset it");
       return;
     }
-    if (!sameSecret(web.arg("c"), adminPass)) {
+    if (!verifyAdminPass(web.arg("c"))) {
       portalFails++;
       Serial.printf("[setup] wrong current admin password (%u/%u)\n", portalFails, PORTAL_MAX_FAILS);
       delay(1000);
@@ -1176,10 +1275,10 @@ static void handleWifiSave() {
       return;
     }
   }
-  if (ap.length() ? ap.length() < MIN_ADMIN_PASS : !adminPass.length()) {
+  if (ap.length() ? ap.length() < MIN_ADMIN_PASS : !adminSet) {
     web.send(400, "text/plain", "admin password must be at least 8 characters"); return;
   }
-  if (ap.length()) { prefs.begin("auth", false); prefs.putString("pass", ap); prefs.end(); }
+  if (ap.length()) setAdminPass(ap, true);
   prefs.begin("wifi", false); prefs.putString("ssid", ss); prefs.putString("pass", pw); prefs.end();
   web.send(200, "text/html", "<!doctype html><meta charset=utf-8><body style='font:16px system-ui;text-align:center;margin-top:60px'>"
                              "&#9989; Saved. Restarting and joining <b>" + htmlEscape(ss) + "</b>&hellip;<br><br>"
@@ -1242,9 +1341,10 @@ void setup() {
 
   if (forcePortal || !connectWiFi()) startConfigPortal();   // portal blocks + reboots on save; returns only when connected
   Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
+  protectWifiPass();
   if (MDNS.begin("c3adblock")) { MDNS.addService("http", "tcp", 80); Serial.println("dashboard: http://c3adblock.local"); }
 
-  if (!adminPass.length())
+  if (!adminSet)
     Serial.println("[WARN] no admin password set: settings, uploads and OTA are locked. "
                    "Hold BOOT while powering on to run setup and choose one.");
 
@@ -1317,19 +1417,19 @@ void setup() {
   web.begin();
   if (CONFIRM_LED >= 0) { pinMode(CONFIRM_LED, OUTPUT); ledSet(false); }
   btnStable = btnLast = digitalRead(BOOT_PIN);
-  if (otaPass.length()) {                  // never run network OTA without a password
+  if (otaHashHex.length()) {               // never run network OTA without a password
     ArduinoOTA.setHostname("c3adblock");   // pio run -t upload --upload-port c3adblock.local
-    ArduinoOTA.setPassword(otaPass.c_str());
+    ArduinoOTA.setPasswordHash(otaHashHex.c_str());
     ArduinoOTA.begin();
   }
-  Serial.printf("DNS :53 + dashboard :80%s up\n", otaPass.length() ? (physConfirm ? " + OTA (press BOOT to open)" : " + OTA") : "");
+  Serial.printf("DNS :53 + dashboard :80%s up\n", otaHashHex.length() ? (physConfirm ? " + OTA (press BOOT to open)" : " + OTA") : "");
 }
 
 void loop() {
   confirmLoop();
   // With physical confirmation on, espota only gets an answer for a minute after a BOOT
   // press. An accepted upload runs to completion inside this one handle() call.
-  if (otaPass.length() && (!physConfirm || otaWindowOpen())) ArduinoOTA.handle();
+  if (otaHashHex.length() && (!physConfirm || otaWindowOpen())) ArduinoOTA.handle();
   web.handleClient();                     // DNS is served by its own task (dnsTask)
   if (!blockingOn && resumeAt && (int32_t)(millis() - resumeAt) >= 0) { blockingOn = true; resumeAt = 0; }
   if (updateUrl.length()) {               // periodic remote blocklist auto-update

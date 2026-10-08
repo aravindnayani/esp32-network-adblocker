@@ -46,8 +46,8 @@ safe to use.
 
 ### 🔐 Admin password chosen on the device, with no default credentials
 - **The setup portal now asks for a dashboard admin password** (8+ characters, user `admin`)
-  next to the WiFi details. It is stored in NVS (`auth` namespace), so you no longer need
-  to put a password in `secrets.h` and rebuild.
+  next to the WiFi details. It is stored in NVS (`auth` namespace) as a salted hash, so you
+  no longer need to put a password in `secrets.h` and rebuild.
 - **The placeholder passwords are ignored.** `CHANGE_ME_WEB_PASSWORD` and
   `CHANGE_ME_OTA_PASSWORD` are public, so the firmware treats them as "no password".
   Upstream booted with them and only showed a warning.
@@ -476,6 +476,24 @@ and Host checks above.
 dot-separated labels of up to 63 characters, 253 total); `/addblock` returns `400` with the
 reason otherwise. The update URL can't contain spaces or control characters, and every string
 in `/stats.json` has control characters escaped, so nothing stored can break the dashboard.
+
+**Secrets on the device.** The admin password is never stored in plaintext: NVS holds a
+random salt and a PBKDF2-HMAC-SHA256 hash (10,000 iterations), and logins are checked
+against it. Only HTTP Basic auth is accepted, since Digest would need the password itself.
+Network OTA is the exception. espota's challenge protocol needs MD5(password) on the
+device, so that is stored too. It is unsalted and fast to brute-force, so a weak admin
+password can still be recovered from a flash dump. Use a long one, or set a separate
+`OTA_PASS` in `secrets.h`. For a WPA/WPA2 network (including WPA2/WPA3 mixed mode), the
+device swaps the stored WiFi passphrase for the key derived from it (the PMK) after it
+first connects. That key still joins your network, but the passphrase itself, which you
+may use elsewhere, is no longer on the device. WPA3-only networks need the passphrase, so
+it is kept for them. Firmware from before this change stored the admin password in
+plaintext; it is converted on first boot. Values compiled in from `secrets.h` are in the
+firmware image as written.
+
+Only flash encryption fully protects these from someone holding the device. It isn't
+enabled because it permanently burns eFuses on the chip, and the browser flasher can't set
+it up. See Espressif's flash-encryption guide if you build from source and want it.
 
 **Out of scope:** the setup AP (`C3-AdBlock-XXXX`) is open by design, because it has to
 be joinable before any password exists. The WiFi and admin passwords typed into the
