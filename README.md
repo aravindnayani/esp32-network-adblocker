@@ -80,6 +80,14 @@ safe to use.
   nothing pending.
 - It can be turned off under **Security** on the dashboard (turning it off needs a press too).
   BOOT-at-power-on recovery turns it back on.
+- **Pausing is limited too.** With the password alone you can pause blocking for up to 15
+  minutes per hour. A longer or indefinite pause needs a BOOT press, so an agent can't
+  switch the blocker off for good with one call, or by re-pausing every few minutes.
+- **An approval covers one exact request.** The press approves the URL, pause length or
+  file (size + FNV-1a checksum) the dashboard asked for, not just the action. Something
+  else in the same browser can't use your press for its own URL or firmware. A request
+  that's waiting can't be replaced, even from the same IP; it has to be cancelled, and the
+  cancel is logged.
 
 ### 🚫 Login lockout
 - After **5 wrong passwords** from one IP, that IP gets `429` for 30 s, doubling with each
@@ -389,11 +397,21 @@ Read-only views (`/`, `/stats.json`) stay open. Every state-changing endpoint re
 **Physical confirmation.** The checks above stop other devices and other web pages, but not
 software acting *with* your credentials: an AI browser agent driving a tab where the dashboard
 is logged in, a prompt injection, or anything that read the password off the LAN. So
-`/update`, `/upload`, `/forgetwifi`, and `/setupdate` with a changed URL also need a BOOT press.
-The dashboard calls `/confirm?a=<action>` and the LED blinks. A press within 30 s approves that
-action for the IP that asked, once, within 60 s. Without it they return `428`. Another IP can't
-replace a pending request (`409`), and the dashboard shows which action and IP a press would
-approve. Network OTA only runs for 60 s after a BOOT press with nothing pending. Turn it off
+`/update`, `/upload`, `/forgetwifi`, `/setupdate` with a changed URL, and a `/pause` beyond the
+free budget also need a BOOT press. The dashboard calls `/confirm?a=<action>&p=<param>` and the
+LED blinks. A press within 30 s approves that action, with that exact parameter, for the IP that
+asked, once, within 60 s. Without it they return `428`. The parameter is the new URL for
+`setupdate`, the length in seconds for `pause` (`0` = indefinite), and `<size>:<fnv32 hex>` of
+the file for `upload` and `update`. The device hashes the file as it arrives and rejects it,
+before it's committed or flashed, if it isn't the approved one. Nothing can replace a pending
+request (`409`), not even from the same IP: it has to be cancelled first with
+`/confirm?cancel=1`, which is logged. The dashboard shows which action, parameter and IP a
+press would approve. Keep in mind that a browser agent can change what the dashboard tab
+shows, so check the audit log or another device if something looks off.
+
+**Pause budget.** With physical confirmation on, up to 15 minutes of pausing per hour needs
+only the password. A longer or indefinite pause needs a press. Resuming early doesn't give the
+unused time back. Pauses are capped at 7 days. Network OTA only runs for 60 s after a BOOT press with nothing pending. Turn it off
 under **Security** (needs a press). Build flags: `-DCONFIRM_LED=<gpio>` / `-DCONFIRM_LED_ON=HIGH|LOW`,
 or `-DCONFIRM_LED=-1` for no LED.
 
@@ -509,6 +527,7 @@ platformio.ini            envs: c3 (default), esp32dev
 - ✅ CI-built, credential-free browser-flasher images
 - ✅ Installer page (`docs/index.html`) walks through choosing the admin password
 - ✅ BOOT-button confirmation for risky actions, login lockout, audit log
+- ✅ BOOT approvals bound to the exact URL/file/pause length; long pauses need a press
 - ⬜ Act as the DHCP server (hand itself out as DNS) for true plug-and-play
 
 ## Inspiration & Thanks

@@ -290,8 +290,7 @@ static UpSock ups[UP_SOCKS];
 static int dnsSock = -1;
 static uint8_t dbuf[1536];   // DNS task only; fits any non-fragmented UDP reply (EDNS answers can exceed 512)
 
-static uint32_t fnv32(const uint8_t* p, size_t n) {
-  uint32_t h = 2166136261u;
+static uint32_t fnv32(const uint8_t* p, size_t n, uint32_t h = 2166136261u) {   // h: continue a running hash
   for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 16777619u; }
   return h;
 }
@@ -638,13 +637,19 @@ static bool requireAuth() {
 //   2. BOOT pressed within CONFIRM_WAIT_MS -> that action is approved for CONFIRM_USE_MS,
 //      for the IP that asked, once
 //   3. the real request consumes the approval (428 without one)
+// An approval is for one exact request, not just an action name: /confirm also takes
+// p=<parameter> (the new update URL, the pause length, "<size>:<fnv32>" of an upload) and
+// the real request must match it. Otherwise something else in the same browser (same IP)
+// could use your press for its own URL or file. Nothing can replace a pending request, not
+// even from the same IP; it has to be cancelled (/confirm?cancel=1), which is audited.
 // While physical confirmation is on, network OTA (espota) also only answers for a minute
 // after a BOOT press made with nothing pending. It can be turned off on the dashboard
 // (which itself needs a press); BOOT-at-power-on recovery turns it back on.
 static const uint32_t CONFIRM_WAIT_MS = 30000, CONFIRM_USE_MS = 60000, OTA_WINDOW_MS = 60000;
-static const char* const CONFIRM_ACTIONS[] = { "update", "upload", "setupdate", "forgetwifi", "phys" };
+static const char* const CONFIRM_ACTIONS[] = { "update", "upload", "setupdate", "forgetwifi", "phys", "pause" };
 bool physConfirm = true;                         // NVS auth/phys
-struct Confirm { char action[12]; uint32_t ip, until; bool approved; };
+// ph = fnv32 of the parameter; detail = the parameter as shown on the dashboard (may be cut short)
+struct Confirm { char action[12]; char detail[48]; uint32_t ip, until, ph; bool approved; };
 static Confirm pend = {};                        // action[0] == 0: nothing pending
 static uint32_t otaWindowUntil = 0;
 static bool confirmActive() { return pend.action[0] && (int32_t)(pend.until - millis()) > 0; }
@@ -654,35 +659,70 @@ static void ledSet(bool on) {
 }
 static void loadPhys() { prefs.begin("auth", true); physConfirm = prefs.getBool("phys", true); prefs.end(); }
 static void savePhys() { prefs.begin("auth", false); prefs.putBool("phys", physConfirm); prefs.end(); }
-// True if this request may do `action` now; consumes the approval.
-static bool consumeConfirm(const char* action) {
+static uint32_t paramHash(const String& p) { return fnv32((const uint8_t*)p.c_str(), p.length()); }
+static bool approvedFor(const char* action) {
+  return confirmActive() && pend.approved && !strcmp(pend.action, action) && pend.ip == clientIp();
+}
+// True if this request may do `action` with `param` now; consumes the approval.
+static bool consumeConfirm(const char* action, const String& param = "") {
   if (!physConfirm) return true;
-  if (!confirmActive() || !pend.approved || strcmp(pend.action, action) || pend.ip != clientIp()) return false;
+  if (!approvedFor(action) || pend.ph != paramHash(param)) return false;
   pend.action[0] = 0;
   return true;
 }
-static bool requireConfirm(const char* action) {
-  if (consumeConfirm(action)) return true;
+static bool requireConfirm(const char* action, const String& param = "") {
+  if (consumeConfirm(action, param)) return true;
   audit("unconfirmed", action);
   sendAuthError(AUTH_CONFIRM);
   return false;
 }
+// An upload's parameter ("<size>:<fnv32 hex>") is only known once the whole file is in,
+// so the approval is taken when the file starts and the file is checked when it ends.
+struct FileGate { bool on; uint32_t want, h; size_t n; };
+static FileGate fgate = {};
+static bool gateStart(const char* action) {
+  fgate = {};
+  if (!physConfirm) return true;
+  if (!approvedFor(action)) return false;
+  fgate.on = true; fgate.want = pend.ph; fgate.h = 2166136261u;
+  pend.action[0] = 0;
+  return true;
+}
+static void gateWrite(const uint8_t* p, size_t n) { fgate.h = fnv32(p, n, fgate.h); fgate.n += n; }
+static bool gateOk() {                           // the received file is the one approved
+  if (!fgate.on) return true;
+  char tag[24]; snprintf(tag, sizeof(tag), "%u:%08x", (unsigned)fgate.n, (unsigned)fgate.h);
+  return paramHash(tag) == fgate.want;
+}
 static void handleConfirm() {
   if (!requireAuth()) return;
-  String a = web.arg("a");
+  if (web.hasArg("cancel")) {                    // /confirm?cancel=1: drop this device's own request
+    if (!confirmActive()) { web.send(200, "text/plain", "nothing pending"); return; }
+    if (pend.ip != clientIp()) { web.send(409, "text/plain", "that request belongs to another device"); return; }
+    audit("cancelled", pend.action); pend.action[0] = 0;
+    web.send(200, "text/plain", "cancelled");
+    return;
+  }
+  String a = web.arg("a"), p = web.arg("p");
   bool known = false;
   for (const char* k : CONFIRM_ACTIONS) if (a == k) known = true;
   if (!known) { web.send(400, "text/plain", "unknown action"); return; }
   if (!physConfirm) { web.send(200, "text/plain", "approved"); return; }
-  // Another device can't swap its own action in under someone else's pending one.
-  if (confirmActive() && pend.ip != clientIp()) {
-    web.send(409, "text/plain", "another device is waiting for a BOOT press; try again in " +
-                                String((pend.until - millis()) / 1000 + 1) + " s");
+  // One request at a time, and nobody swaps theirs in under a pending one, the same IP included.
+  if (confirmActive()) {
+    String left = String((pend.until - millis()) / 1000 + 1) + " s";
+    if (pend.ip == clientIp())
+      web.send(409, "text/plain", "this device already has a request waiting (" + String(pend.action) +
+                                  "); cancel it or wait " + left);
+    else
+      web.send(409, "text/plain", "another device is waiting for a BOOT press; try again in " + left);
     return;
   }
   copySafe(pend.action, sizeof(pend.action), a.c_str());
+  copySafe(pend.detail, sizeof(pend.detail), p.c_str());
+  pend.ph = paramHash(p);
   pend.ip = clientIp(); pend.approved = false; pend.until = millis() + CONFIRM_WAIT_MS;
-  audit("confirm?", a);
+  audit("confirm?", p.length() ? a + " " + p : a);
   web.send(200, "text/plain", "pending");
 }
 // Debounced press (released -> pressed) of the BOOT button.
@@ -712,6 +752,30 @@ static void confirmLoop() {
   }
   ledSet(waiting ? (millis() / 150) & 1 : otaWindowOpen() ? (millis() / 600) & 1 : false);
 }
+// ---------- pause ----------
+// Pausing turns blocking off for the whole network, so with physical confirmation on it's
+// limited too: PAUSE_FREE_S of pausing per hour needs only the password; anything longer,
+// or indefinite, needs a BOOT press. Without this, one call from an agent with the password
+// (or one repeated every few minutes) turns the blocker off for good. Resuming early doesn't
+// give the unused time back.
+static const uint32_t PAUSE_FREE_S = 900, PAUSE_WINDOW_MS = 3600000, PAUSE_MAX_S = 7 * 86400;
+static uint32_t pauseWinStart = 0, pauseFreeUsed = 0;   // pauseWinStart 0: no window open
+static uint32_t pauseFreeLeft() {
+  if (pauseWinStart && millis() - pauseWinStart >= PAUSE_WINDOW_MS) pauseWinStart = pauseFreeUsed = 0;
+  return PAUSE_FREE_S - pauseFreeUsed;
+}
+static void handlePause() {                      // /pause?s=300  (0 or absent = indefinite)
+  if (!requireAuth()) return;
+  long s = web.hasArg("s") ? web.arg("s").toInt() : 0;
+  if (s < 0) s = 0;
+  if (s > (long)PAUSE_MAX_S) s = PAUSE_MAX_S;    // also keeps resumeAt within millis() range
+  bool inBudget = physConfirm && s > 0 && (uint32_t)s <= pauseFreeLeft();
+  if (physConfirm && !inBudget && !requireConfirm("pause", String(s))) return;
+  if (inBudget) { if (!pauseWinStart) pauseWinStart = millis() | 1; pauseFreeUsed += s; }
+  blockingOn = false; resumeAt = (s > 0) ? millis() + (uint32_t)s * 1000UL : 0;
+  audit("pause", s > 0 ? String(s) + " s" : String("indefinitely"));
+  web.send(200, "text/plain", "paused");
+}
 static void handleStats() {
   if (!requireHost()) return;
   StateLock lock;
@@ -724,10 +788,14 @@ static void handleStats() {
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt ? (resumeAt - millis()) / 1000 : 0) +
              ",\"noauth\":" + (adminPass.length() ? "false" : "true") +
-             ",\"phys\":" + (physConfirm ? "true" : "false") + ",\"otaWin\":" + (otaWindowOpen() ? (otaWindowUntil - millis()) / 1000 + 1 : 0);
-  if (confirmActive())
-    j += ",\"confirm\":{\"a\":\"" + String(pend.action) + "\",\"ip\":\"" + IPAddress(pend.ip).toString() +
+             ",\"phys\":" + (physConfirm ? "true" : "false") + ",\"otaWin\":" + (otaWindowOpen() ? (otaWindowUntil - millis()) / 1000 + 1 : 0) +
+             ",\"pauseFree\":" + pauseFreeLeft();
+  if (confirmActive()) {
+    char ph[9]; snprintf(ph, sizeof(ph), "%08x", (unsigned)pend.ph);
+    j += ",\"confirm\":{\"a\":\"" + String(pend.action) + "\",\"p\":\"" + jesc(pend.detail) + "\",\"ph\":\"" + ph +
+         "\",\"ip\":\"" + IPAddress(pend.ip).toString() +
          "\",\"state\":\"" + (pend.approved ? "approved" : "pending") + "\",\"left\":" + ((pend.until - millis()) / 1000 + 1) + "}";
+  }
   j += ",\"lockouts\":[";
   bool first = true;
   for (int i = 0; i < LOCK_SLOTS; i++) {
@@ -855,10 +923,11 @@ static void handleUploadDone() {
   audit("upload", upResult);
   web.send(upResult.startsWith("ok") ? 200 : 500, "text/plain", upResult);
 }
-// Auth + physical confirmation for an upload, checked when its first part arrives.
+// Auth + physical confirmation for an upload, checked when its first part arrives. That
+// the file is the approved one is checked at its end (gateOk()).
 static int uploadAuth(const char* action) {
   AuthResult r = checkAuth();
-  if (r == AUTH_OK && !consumeConfirm(action)) { audit("unconfirmed", action); r = AUTH_CONFIRM; }
+  if (r == AUTH_OK && !gateStart(action)) { audit("unconfirmed", action); r = AUTH_CONFIRM; }
   return r;
 }
 static void handleUpload() {
@@ -877,12 +946,15 @@ static void handleUpload() {
       Serial.printf("[ota] receiving %s\n", u.filename.c_str());
       break;
     case UPLOAD_FILE_WRITE:
-      if (upAuth == AUTH_OK && upFile && upWriteOk && upFile.write(u.buf, u.currentSize) != u.currentSize) upWriteOk = false;
+      if (upAuth != AUTH_OK) break;
+      gateWrite(u.buf, u.currentSize);
+      if (upFile && upWriteOk && upFile.write(u.buf, u.currentSize) != u.currentSize) upWriteOk = false;
       break;
     case UPLOAD_FILE_END: {
       if (upAuth != AUTH_OK) break;
       if (upFile) upFile.close();
       String why = "write failed (flash full?)"; bool ok = false;
+      if (upWriteOk && !gateOk()) { upWriteOk = false; why = "not the file approved with BOOT"; audit("wrong file", "blocklist"); }
       if (upWriteOk) ok = commitNewBlocklist(0, why);
       else abortNewBlocklist();
       upResult = swapResult(ok, why);
@@ -951,10 +1023,13 @@ static bool fetchBlocklist(String url) {
 
 // ---------- firmware OTA (browser upload of firmware.bin -> reboot) ----------
 static int fwAuth = AUTH_UNSET;
+static bool fwWrongFile = false;
 static void handleFwUpdateDone() {
   int r = fwAuth; fwAuth = AUTH_UNSET;
+  bool wrong = fwWrongFile; fwWrongFile = false;
   if (r == AUTH_UNSET) { if (requireAuth()) web.send(400, "text/plain", "no file received"); return; }
   if (r != AUTH_OK) { sendAuthError((AuthResult)r); return; }
+  if (wrong) { web.send(428, "text/plain", "rejected: not the file approved with BOOT (nothing was flashed)"); return; }
   bool ok = !Update.hasError();
   audit("firmware", ok ? "flashed, rebooting" : "update failed");
   web.send(ok ? 200 : 500, "text/plain", ok ? "ok, rebooting" : "firmware update failed");
@@ -963,16 +1038,18 @@ static void handleFwUpdateDone() {
 static void handleFwUpload() {
   HTTPUpload& u = web.upload();
   if (u.status == UPLOAD_FILE_START) {
-    fwAuth = uploadAuth("update");
+    fwAuth = uploadAuth("update"); fwWrongFile = false;
     if (fwAuth != AUTH_OK) { Serial.println("[fw-ota] auth/CSRF check failed, rejecting flash"); return; }
     Serial.printf("[fw-ota] %s\n", u.filename.c_str());
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
   } else if (u.status == UPLOAD_FILE_WRITE) {
     if (fwAuth != AUTH_OK) return;
+    gateWrite(u.buf, u.currentSize);
     if (Update.write(u.buf, u.currentSize) != u.currentSize) Update.printError(Serial);
   } else if (u.status == UPLOAD_FILE_END) {
     if (fwAuth != AUTH_OK) return;
-    if (Update.end(true)) Serial.printf("[fw-ota] %u bytes OK\n", u.totalSize);
+    if (!gateOk()) { Update.abort(); fwWrongFile = true; audit("wrong file", "firmware"); Serial.println("[fw-ota] not the approved file, aborted"); }
+    else if (Update.end(true)) Serial.printf("[fw-ota] %u bytes OK\n", u.totalSize);
     else Update.printError(Serial);
   } else if (u.status == UPLOAD_FILE_ABORTED) {
     if (fwAuth != AUTH_OK) return;
@@ -1114,15 +1191,9 @@ void setup() {
   web.on("/ban", handleBan);
   web.on("/addblock", []() { if (!requireAuth()) return; String d = web.arg("d"); { StateLock lock; addCustom(d); } audit("block domain", d); web.send(200, "text/plain", "ok"); });
   web.on("/unblock", []() { if (!requireAuth()) return; String d = web.arg("d"); { StateLock lock; removeCustom(d); } audit("unblock domain", d); web.send(200, "text/plain", "ok"); });
-  web.on("/pause", []() {                    // /pause?s=300  (0 or absent = indefinite)
-    if (!requireAuth()) return;
-    long s = web.hasArg("s") ? web.arg("s").toInt() : 0;
-    blockingOn = false; resumeAt = (s > 0) ? millis() + (uint32_t)s * 1000UL : 0;
-    audit("pause", s > 0 ? String(s) + " s" : String("indefinitely"));
-    web.send(200, "text/plain", "paused");
-  });
+  web.on("/pause", handlePause);             // /pause?s=300  (0 or absent = indefinite)
   web.on("/resume", []() { if (!requireAuth()) return; blockingOn = true; resumeAt = 0; audit("resume"); web.send(200, "text/plain", "resumed"); });
-  web.on("/confirm", handleConfirm);         // /confirm?a=<action>: start waiting for a BOOT press
+  web.on("/confirm", handleConfirm);         // /confirm?a=<action>&p=<param>: start waiting for a BOOT press
   web.on("/setphys", []() {                  // /setphys?on=0|1  (turning it off needs a press)
     if (!requireAuth()) return;
     bool on = web.arg("on") != "0";
@@ -1148,7 +1219,7 @@ void setup() {
     }
     // A new URL decides what the device blocks from now on, so it needs a press. The
     // interval alone doesn't.
-    if (u != updateUrl && !requireConfirm("setupdate")) return;
+    if (u != updateUrl && !requireConfirm("setupdate", u)) return;
     if (u != updateUrl) audit("update url", u.length() ? u : String("(none)"));
     updateUrl = u;
     if (web.hasArg("h")) { updateIntervalH = web.arg("h").toInt(); if (updateIntervalH < 1) updateIntervalH = 1; }
