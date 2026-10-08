@@ -1,4 +1,4 @@
-# esp32-c3-adblock
+# esp32-network-adblocker
 
 A **Pi-hole-style DNS ad-blocker** that runs on a **$2 ESP32-C3**, with *no PSRAM required*.
 
@@ -331,7 +331,7 @@ password):
 - **Remote auto-update.** Set a URL and an interval, and the device pulls a prebuilt
   `blocklist.bin` on that schedule. The [blocklist workflow](#ci--github-actions) rebuilds
   the default list **every Monday** and publishes it at a stable URL:
-  `https://github.com/M-Abozaid/esp32-c3-adblock/releases/download/blocklist/blocklist.bin`
+  `https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/blocklist.bin`
   (a fork with Actions enabled publishes the same file under its own
   `…/<owner>/<repo>/releases/…` URL). The URL must be **https://**; the server's
   certificate is checked (see [Security](#security)).
@@ -480,6 +480,8 @@ docs/                     ESP Web Tools installer page + manifest (CI-built imag
 hardware/                 printable C3 SuperMini enclosure (STL)
 partitions.csv            dual-OTA 4 MB layout
 platformio.ini            envs: c3 (default), esp32dev
+LICENSE                   GPL-3.0 (this project)
+LICENSE-UPSTREAM-MIT      MIT notice for code from M-Abozaid/esp32-c3-adblock
 ```
 
 ## Gotchas
@@ -546,4 +548,8 @@ This project exists because of other people's work. Thank you to:
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GPL-3.0. See [LICENSE](LICENSE).
+
+This project builds on [M-Abozaid/esp32-c3-adblock](https://github.com/M-Abozaid/esp32-c3-adblock),
+which is MIT-licensed. The code that came from upstream stays under the MIT License; its
+copyright and permission notice are kept in [LICENSE-UPSTREAM-MIT](LICENSE-UPSTREAM-MIT).
