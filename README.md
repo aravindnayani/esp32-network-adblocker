@@ -71,8 +71,8 @@ safe to use.
   read stats or get past the CSRF header check.
 
 ### 👆 BOOT button approves risky actions
-- **Firmware upload, blocklist upload, a new remote-update URL, and Forget WiFi** now need a
-  press of the device's **BOOT** button as well as the password. The dashboard asks the device
+- **Firmware upload, blocklist upload, a new remote-update URL, Forget WiFi, and pausing
+  blocking indefinitely or for more than 30 minutes** now need a press of the device's **BOOT** button as well as the password. The dashboard asks the device
   to wait (`/confirm`), the LED blinks, and a press within 30 s approves that one action, for
   that one client, for 60 s. Software that has your password can't do these on its own: an AI
   browser agent in a logged-in tab, a prompt-injected script, or someone who sniffed the LAN.
@@ -328,7 +328,7 @@ The dashboard at **http://c3adblock.local** handles all of these (they require t
 password):
 
 - **Blocklist upload.** Drop a freshly built `blocklist.bin` into *Blocklist → Upload*.
-- **Remote auto-update.** Set a URL and an interval, and the device pulls a prebuilt
+- **Remote auto-update.** Set a URL and an interval (1–720 hours), and the device pulls a prebuilt
   `blocklist.bin` on that schedule. The [blocklist workflow](#ci--github-actions) rebuilds
   the default list **every Monday** and publishes it at a stable URL:
   `https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/blocklist.bin`
@@ -389,7 +389,9 @@ Read-only views (`/`, `/stats.json`) stay open. Every state-changing endpoint re
 **Physical confirmation.** The checks above stop other devices and other web pages, but not
 software acting *with* your credentials: an AI browser agent driving a tab where the dashboard
 is logged in, a prompt injection, or anything that read the password off the LAN. So
-`/update`, `/upload`, `/forgetwifi`, and `/setupdate` with a changed URL also need a BOOT press.
+`/update`, `/upload`, `/forgetwifi`, `/setupdate` with a changed URL, and `/pause` that is
+indefinite or longer than 30 minutes also need a BOOT press. Shorter pauses only need the
+password, and `/pause` accepts at most 24 hours.
 The dashboard calls `/confirm?a=<action>` and the LED blinks. A press within 30 s approves that
 action for the IP that asked, once, within 60 s. Without it they return `428`. Another IP can't
 replace a pending request (`409`), and the dashboard shows which action and IP a press would

@@ -71,6 +71,9 @@ uint32_t bannedIP[MAX_BAN]; int numBanned = 0;
 // remote blocklist auto-update
 String updateUrl = "";              // URL of a prebuilt blocklist.bin (e.g. GitHub release asset)
 uint32_t updateIntervalH = 24;      // hours between auto-fetches
+// Upper bound keeps updateIntervalH * 3600000 inside uint32 (it wraps past ~1193 h, and a
+// wrapped interval near 0 re-downloads and rewrites the flash partition on every loop).
+static const uint32_t UPDATE_MIN_H = 1, UPDATE_MAX_H = 720;
 uint32_t lastCheckMs = 0;
 String updateStatus = "never";
 
@@ -649,7 +652,9 @@ static bool requireAuth() {
 // after a BOOT press made with nothing pending. It can be turned off on the dashboard
 // (which itself needs a press); BOOT-at-power-on recovery turns it back on.
 static const uint32_t CONFIRM_WAIT_MS = 30000, CONFIRM_USE_MS = 60000, OTA_WINDOW_MS = 60000;
-static const char* const CONFIRM_ACTIONS[] = { "update", "upload", "setupdate", "forgetwifi", "phys" };
+// Pauses up to PAUSE_FREE_S need only the password; longer or indefinite ones need a press.
+static const uint32_t PAUSE_FREE_S = 1800, PAUSE_MAX_S = 86400;
+static const char* const CONFIRM_ACTIONS[] = { "update", "upload", "setupdate", "forgetwifi", "phys", "pause" };
 bool physConfirm = true;                         // NVS auth/phys
 struct Confirm { char action[12]; uint32_t ip, until; bool approved; };
 static Confirm pend = {};                        // action[0] == 0: nothing pending
@@ -729,7 +734,7 @@ static void handleStats() {
              ",\"heap\":" + ESP.getFreeHeap() + ",\"uptime\":\"" + ut + "\"" +
              ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
-             ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt ? (resumeAt - millis()) / 1000 : 0) +
+             ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt && (int32_t)(resumeAt - millis()) > 0 ? (resumeAt - millis()) / 1000 : 0) +
              ",\"noauth\":" + (adminPass.length() ? "false" : "true") +
              ",\"phys\":" + (physConfirm ? "true" : "false") + ",\"otaWin\":" + (otaWindowOpen() ? (otaWindowUntil - millis()) / 1000 + 1 : 0);
   if (confirmActive())
@@ -910,8 +915,9 @@ static void handleUpload() {
 static void loadUpdateCfg() {
   File f = LittleFS.open("/update.cfg", "r"); if (!f) return;
   updateUrl = f.readStringUntil('\n'); updateUrl.trim();
-  String iv = f.readStringUntil('\n'); iv.trim(); if (iv.length()) updateIntervalH = iv.toInt();
-  f.close(); if (updateIntervalH < 1) updateIntervalH = 1;
+  String iv = f.readStringUntil('\n'); iv.trim();
+  long h = iv.length() ? iv.toInt() : 24;
+  f.close(); updateIntervalH = (uint32_t)constrain(h, (long)UPDATE_MIN_H, (long)UPDATE_MAX_H);
 }
 static void saveUpdateCfg() {
   File f = LittleFS.open("/update.cfg", "w"); if (!f) return;
@@ -1150,7 +1156,12 @@ void setup() {
   web.on("/pause", []() {                    // /pause?s=300  (0 or absent = indefinite)
     if (!requireAuth()) return;
     long s = web.hasArg("s") ? web.arg("s").toInt() : 0;
+    if (s < 0 || s > (long)PAUSE_MAX_S) { web.send(400, "text/plain", "pause must be 0 (indefinite) to " + String(PAUSE_MAX_S) + " s"); return; }
+    // Turning blocking off indefinitely or for long is the quiet way to disable the device,
+    // so it needs a BOOT press like the other risky actions. Short pauses stay one click.
+    if ((s == 0 || s > (long)PAUSE_FREE_S) && !requireConfirm("pause")) return;
     blockingOn = false; resumeAt = (s > 0) ? millis() + (uint32_t)s * 1000UL : 0;
+    if (s > 0 && !resumeAt) resumeAt = 1;      // 0 means "indefinite"; don't land on it by wraparound
     audit("pause", s > 0 ? String(s) + " s" : String("indefinitely"));
     web.send(200, "text/plain", "paused");
   });
@@ -1179,12 +1190,16 @@ void setup() {
       u = web.arg("u"); u.trim();
       if (u.length() && !u.startsWith("https://")) { web.send(400, "text/plain", "update URL must start with https://"); return; }
     }
+    long h = web.hasArg("h") ? web.arg("h").toInt() : (long)updateIntervalH;
+    if (h < (long)UPDATE_MIN_H || h > (long)UPDATE_MAX_H) {   // checked before a press is used up
+      web.send(400, "text/plain", "interval must be " + String(UPDATE_MIN_H) + " to " + String(UPDATE_MAX_H) + " hours"); return;
+    }
     // A new URL decides what the device blocks from now on, so it needs a press. The
     // interval alone doesn't.
     if (u != updateUrl && !requireConfirm("setupdate")) return;
     if (u != updateUrl) audit("update url", u.length() ? u : String("(none)"));
     updateUrl = u;
-    if (web.hasArg("h")) { updateIntervalH = web.arg("h").toInt(); if (updateIntervalH < 1) updateIntervalH = 1; }
+    updateIntervalH = (uint32_t)h;
     saveUpdateCfg(); web.send(200, "text/plain", "ok");
   });
   web.begin();

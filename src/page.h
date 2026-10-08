@@ -37,7 +37,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <form id=upf style=margin-bottom:6px><input type=file id=blf accept=.bin><button>Upload blocklist</button> <span id=upmsg style=color:#8b949e></span></form>
 <div style="color:#8b949e;font-size:12px;margin-bottom:18px">build <code>blocklist.bin</code> with <code>tools/build_blocklist.py</code>, then upload here &mdash; no USB</div>
 <h2>BLOCKLIST &mdash; REMOTE AUTO-UPDATE</h2>
-<div style=margin-bottom:6px><input id=uurl type=url pattern="https://.*" placeholder="https://host/blocklist.bin" size=40> every <input id=uiv size=2 value=24>h
+<div style=margin-bottom:6px><input id=uurl type=url pattern="https://.*" placeholder="https://host/blocklist.bin" size=40> every <input id=uiv type=number min=1 max=720 style=width:4.5em value=24>h
 <button onclick=saveUpd()>Save</button> <button onclick=fetchNow()>Fetch now</button></div>
 <div style="color:#8b949e;font-size:12px;margin-bottom:18px">device pulls a prebuilt <code>blocklist.bin</code> on a schedule (e.g. a GitHub release asset). last: <span id=ustat>&mdash;</span></div>
 <h2>FIRMWARE &mdash; OTA UPDATE</h2>
@@ -46,7 +46,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <h2>WIFI</h2>
 <div style=margin-bottom:18px><button onclick="if(confirm('Forget saved WiFi and reboot into the setup portal?'))forgetWifi()">Forget WiFi</button></div>
 <h2>SECURITY</h2>
-<div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL and Forget WiFi</label></div>
+<div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL, Forget WiFi and pausing blocking for more than 30 min</label></div>
 <div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin></span></div>
 <table id=lt><thead><tr><th>Locked out</th><th>MAC</th><th>Wrong passwords</th><th>Status</th></tr></thead><tbody></tbody></table>
 <table id=at><thead><tr><th>When</th><th>From</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
@@ -58,7 +58,10 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 // though the server can't otherwise tell a forged request from a real one over
 // plain HTTP Basic Auth (browsers auto-replay cached Basic Auth cross-origin).
 const CSRF_HDRS={'X-Requested-With':'c3-adblock'}
-function togglePause(){fetch(blockstate.dataset.on=='1'?'/pause?s='+pausedur.value:'/resume',{headers:CSRF_HDRS}).then(load);}
+// Mirrors PAUSE_FREE_S in main.cpp: longer or indefinite pauses need a BOOT press.
+async function togglePause(){if(blockstate.dataset.on!='1'){fetch('/resume',{headers:CSRF_HDRS}).then(load);return}
+let s=+pausedur.value;if((s==0||s>1800)&&!await gated('pause'))return;
+let r=await fetch('/pause?s='+s,{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
 async function load(){let s=await(await fetch('/stats.json')).json();
 host.textContent='@ '+s.ip;
 credwarn.style.display=s.noauth?'block':'none';
@@ -84,7 +87,7 @@ if(document.activeElement!=uurl)uurl.value=s.upurl||'';
 if(document.activeElement!=uiv)uiv.value=s.upiv||24;
 ustat.textContent=s.upstat||'—';}
 function ago(t){return t<60?t+'s ago':t<3600?Math.floor(t/60)+'m ago':t<86400?Math.floor(t/3600)+'h ago':Math.floor(t/86400)+'d ago'}
-const ACTS={update:'flashing firmware',upload:'uploading a blocklist',setupdate:'changing the update URL',forgetwifi:'forgetting WiFi',phys:'turning off physical confirmation'};
+const ACTS={update:'flashing firmware',upload:'uploading a blocklist',setupdate:'changing the update URL',forgetwifi:'forgetting WiFi',phys:'turning off physical confirmation',pause:'pausing blocking'};
 function showConf(c){confbar.style.display=c&&c.state=='pending'?'block':'none';
 if(c){confwhat.textContent=(ACTS[c.a]||c.a)+' (requested by '+c.ip+')';confleft.textContent=c.left+'s left'}}
 let upurlNow='';
