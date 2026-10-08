@@ -1035,7 +1035,7 @@ static bool clearAllLockouts() {           // true if anything was locked or cou
 // exception: espota's challenge protocol needs MD5(password) on the device ("otamd5"), and
 // ArduinoOTA can't use anything slower. That MD5 is unsalted and fast to brute-force, so a
 // weak admin password can still be recovered from a flash dump: use a long one, or enable
-// flash encryption (README). Older firmware stored the password itself ("pass"); loadAuth()
+// flash encryption (guide/security.md). Older firmware stored the password itself ("pass"); loadAuth()
 // converts that on first boot.
 static const uint32_t ADMIN_ITER = 10000;
 static bool isPlaceholder(const char* s, const char* placeholder) { return !s || !*s || strcmp(s, placeholder) == 0; }
