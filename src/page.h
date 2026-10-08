@@ -84,7 +84,7 @@ admin.style.display=s.admin?'':'none';if(!s.admin){showConf(null);return}
 ct.tBodies[0].innerHTML=s.clients.sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a.allowed)).map(c=>
 `<tr><td>${c.ip}${c.banned?' <span class=tag style=color:#f85149>BANNED</span>':''}</td><td>${c.mac}</td>
 <td class=b>${fmt(c.blocked)}</td><td class=a>${fmt(c.allowed)}</td>
-<td><button class=ban data-ip="${c.ip}">${c.banned?'Unban':'Ban'}</button></td></tr>`).join('');
+<td><button class=ban data-ip="${esc(c.ip)}" data-mac="${esc(c.mac)}">${c.banned?'Unban':'Ban'}</button></td></tr>`).join('');
 cl.tBodies[0].innerHTML=s.custom.map(d=>`<tr><td>${esc(d)}</td><td style=text-align:right><button class=rmbtn data-d="${esc(d)}">remove</button></td></tr>`).join('')||'<tr><td style=color:#8b949e>none yet</td></tr>';
 physcb.checked=!!s.phys;otawin.textContent=s.otaWin?'Network OTA open for '+s.otaWin+'s.':'';
 showConf(s.confirm);
@@ -112,7 +112,7 @@ return false}
 async function setPhys(){let on=physcb.checked;if(!on&&!await gated('phys')){physcb.checked=true;return}
 let r=await fetch('/setphys?on='+(on?1:0),{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
 function addDom(){let d=dom.value.trim();if(d){fetch('/addblock?d='+encodeURIComponent(d),{headers:CSRF_HDRS}).then(async r=>{if(r.ok)dom.value='';else alert(await r.text());load()})}}
-ct.addEventListener('click',e=>{if(e.target.classList.contains('ban'))fetch('/ban?ip='+e.target.dataset.ip,{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})});
+ct.addEventListener('click',e=>{if(e.target.classList.contains('ban'))fetch('/ban?ip='+encodeURIComponent(e.target.dataset.ip)+'&mac='+encodeURIComponent(e.target.dataset.mac),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})});
 cl.addEventListener('click',e=>{if(e.target.classList.contains('rmbtn'))fetch('/unblock?d='+encodeURIComponent(e.target.dataset.d),{headers:CSRF_HDRS}).then(load)});
 async function saveUpd(){if(uurl.value.trim()!=upurlNow&&!await gated('setupdate'))return;fetch('/setupdate?u='+encodeURIComponent(uurl.value.trim())+'&h='+(parseInt(uiv.value)||24),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})}
 function fetchNow(){ustat.textContent='fetching...';fetch('/fetchnow',{headers:CSRF_HDRS}).then(r=>r.text()).then(t=>{ustat.textContent=t;load()})}

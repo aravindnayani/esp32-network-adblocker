@@ -85,8 +85,14 @@ String customDom[MAX_CUSTOM]; uint64_t customHash[MAX_CUSTOM]; int numCustom = 0
 // table is a best-effort stats cache that evicts, so a ban stored there could be pushed out
 // by a flood of spoofed source addresses, and banned devices that hadn't queried yet since
 // boot used to be dropped from the file whenever any other ban changed.
+// A ban is by MAC address whenever the device's MAC is known, so a banned device can't get
+// around it by changing its IP, and whoever gets its old IP later isn't banned. MACs come
+// from the ARP table, so they're only known for devices on our own subnet that have talked
+// to us. Others (behind a router, or not seen yet) are banned by IP, and the entry switches
+// to their MAC once it's seen. A device can still change (or randomize) its MAC.
+struct Ban { uint32_t ip; uint8_t mac[6]; };   // mac all zero = IP-only
 static const int MAX_BAN = 32;
-uint32_t bannedIP[MAX_BAN]; int numBanned = 0;
+Ban bans[MAX_BAN]; int numBanned = 0;
 
 // remote blocklist auto-update
 String updateUrl = "";              // URL of a prebuilt blocklist.bin (e.g. GitHub release asset)
@@ -290,27 +296,84 @@ static void removeCustom(String& d) {
     numCustom--; saveCustom(); return;
   }
 }
-static bool isBannedIP(uint32_t ip) { for (int i = 0; i < numBanned; i++) if (bannedIP[i] == ip) return true; return false; }
+static bool macKnown(const uint8_t* m) { for (int i = 0; i < 6; i++) if (m[i]) return true; return false; }
+static bool parseMac(const String& s, uint8_t* mac) {
+  unsigned v[6];
+  if (sscanf(s.c_str(), "%2x:%2x:%2x:%2x:%2x:%2x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return false;
+  for (int i = 0; i < 6; i++) mac[i] = (uint8_t)v[i];
+  return true;
+}
+static bool banMatches(const Ban& b, uint32_t ip, const uint8_t* mac) {
+  return macKnown(b.mac) ? macKnown(mac) && !memcmp(b.mac, mac, 6) : b.ip == ip;
+}
+static bool isBanned(uint32_t ip, const uint8_t* mac) {
+  for (int i = 0; i < numBanned; i++) if (banMatches(bans[i], ip, mac)) return true;
+  return false;
+}
+// /banned.txt: one ban per line, "ip" or "ip mac".
 static void loadBanned() {
   numBanned = 0; File f = LittleFS.open("/banned.txt", "r"); if (!f) return;
-  while (f.available() && numBanned < MAX_BAN) { String l = f.readStringUntil('\n'); l.trim(); IPAddress ip; if (l.length() && ip.fromString(l)) bannedIP[numBanned++] = (uint32_t)ip; }
+  while (f.available() && numBanned < MAX_BAN) {
+    String l = f.readStringUntil('\n'); l.trim();
+    int sp = l.indexOf(' ');
+    IPAddress ip; Ban b = {};
+    if (!ip.fromString(sp < 0 ? l : l.substring(0, sp))) continue;
+    b.ip = (uint32_t)ip;
+    if (sp >= 0 && !parseMac(l.substring(sp + 1), b.mac)) memset(b.mac, 0, 6);
+    bans[numBanned++] = b;
+  }
   f.close();
 }
 static void saveBanned() {
   File f = LittleFS.open("/banned.txt", "w"); if (!f) return;
-  for (int i = 0; i < numBanned; i++) { IPAddress ip(bannedIP[i]); f.println(ip.toString()); }
+  for (int i = 0; i < numBanned; i++) {
+    const Ban& b = bans[i];
+    if (macKnown(b.mac)) f.printf("%s %02x:%02x:%02x:%02x:%02x:%02x\n", IPAddress(b.ip).toString().c_str(),
+                                  b.mac[0], b.mac[1], b.mac[2], b.mac[3], b.mac[4], b.mac[5]);
+    else f.println(IPAddress(b.ip).toString());
+  }
   f.close();
 }
-// Ban or unban `ip`. Returns false only if banning and the list is full.
-static bool setBanned(uint32_t ip, bool ban) {
-  for (int i = 0; i < numBanned; i++) if (bannedIP[i] == ip) {
-    if (!ban) { bannedIP[i] = bannedIP[--numBanned]; saveBanned(); }
+// Ban or unban the device at ip/mac (mac all zero if unknown). Returns false only if
+// banning and the list is full.
+static bool setBanned(uint32_t ip, const uint8_t* mac, bool ban) {
+  if (!ban) {
+    bool changed = false;
+    for (int i = 0; i < numBanned; ) {
+      if (banMatches(bans[i], ip, mac)) { bans[i] = bans[--numBanned]; changed = true; }
+      else i++;
+    }
+    if (changed) saveBanned();
     return true;
   }
-  if (!ban) return true;
+  if (isBanned(ip, mac)) return true;
   if (numBanned >= MAX_BAN) return false;
-  bannedIP[numBanned++] = ip; saveBanned();
+  Ban& b = bans[numBanned++]; b.ip = ip; memcpy(b.mac, mac, 6);
+  saveBanned();
   return true;
+}
+// Ban check for a DNS query. Also keeps the list current: an IP-only ban picks up the
+// device's MAC once it's known, and a MAC ban records the device's latest IP (for display).
+static bool checkBan(uint32_t ip, const uint8_t* mac) {
+  bool known = macKnown(mac), hit = false, dirty = false;
+  for (int i = 0; i < numBanned; i++) {
+    Ban& b = bans[i];
+    if (macKnown(b.mac)) {
+      if (!known || memcmp(b.mac, mac, 6)) continue;
+      hit = true;
+      if (b.ip != ip) { b.ip = ip; dirty = true; }
+    } else if (b.ip == ip) {
+      hit = true;
+      if (known) { memcpy(b.mac, mac, 6); dirty = true; }
+    }
+  }
+  if (dirty) {                                   // learning a MAC can duplicate another entry
+    for (int i = 0; i < numBanned; i++)
+      for (int j = i + 1; j < numBanned; )
+        if (macKnown(bans[i].mac) && !memcmp(bans[i].mac, bans[j].mac, 6)) bans[j] = bans[--numBanned]; else j++;
+    saveBanned();
+  }
+  return hit;
 }
 
 // ---------- client table ----------
@@ -320,10 +383,16 @@ static void getMac(uint32_t ip, uint8_t* mac) {
   for (struct netif* nif = netif_list; nif; nif = nif->next)
     if (etharp_find_addr(nif, &ipa, &eth, &ipret) >= 0 && eth) { memcpy(mac, eth->addr, 6); return; }
 }
+// The MAC is looked up again on every call (a short ARP-table scan), so an IP that DHCP
+// hands to another device doesn't keep the previous device's MAC, and bans follow the MAC.
 static Dev* getClient(uint32_t ip) {
-  for (int i = 0; i < numClients; i++) if (clients[i].ip == ip) { clients[i].lastSeen = millis(); return &clients[i]; }
+  for (int i = 0; i < numClients; i++) if (clients[i].ip == ip) {
+    Dev& c = clients[i]; uint8_t m[6];
+    c.lastSeen = millis(); getMac(ip, m); if (macKnown(m)) memcpy(c.mac, m, 6);
+    return &c;
+  }
   // Full: reuse the least recently seen entry, so new clients still get counted. Only stats
-  // are lost; bans are kept separately (bannedIP).
+  // are lost; bans are kept separately (bans).
   Dev* c = &clients[0];
   if (numClients < MAX_CLIENTS) c = &clients[numClients++];
   else for (int i = 1; i < MAX_CLIENTS; i++) if (millis() - clients[i].lastSeen > millis() - c->lastSeen) c = &clients[i];
@@ -501,7 +570,7 @@ static void handleClientQueries() {
     {
       StateLock lock;                                 // client table + blocklist are shared with the web side
       Dev* c = getClient(cip);
-      blocked = isBannedIP(cip) || (blockingOn && dl && numHashes && isBlocked(domain));
+      blocked = checkBan(cip, c->mac) || (blockingOn && dl && numHashes && isBlocked(domain));
       if (blocked) { totalBlocked++; if (c) c->blocked++; }
       else         { totalAllowed++; if (c) c->allowed++; }
     }
@@ -968,12 +1037,12 @@ static void handleStats() {
   }
   j += "],\"clients\":[";
   for (int i = 0; i < numClients; i++) { Dev& c = clients[i]; IPAddress ip(c.ip);
-    j += (i ? "," : ""); j += "{\"ip\":\"" + ip.toString() + "\",\"mac\":\"" + macStr(c.mac) + "\",\"blocked\":" + c.blocked + ",\"allowed\":" + c.allowed + ",\"banned\":" + (isBannedIP(c.ip)?"true":"false") + "}"; }
+    j += (i ? "," : ""); j += "{\"ip\":\"" + ip.toString() + "\",\"mac\":\"" + macStr(c.mac) + "\",\"blocked\":" + c.blocked + ",\"allowed\":" + c.allowed + ",\"banned\":" + (isBanned(c.ip, c.mac)?"true":"false") + "}"; }
   for (int b = 0; b < numBanned; b++) {                  // banned but not in the table (yet): still listed, so it can be unbanned
     bool listed = false;
-    for (int i = 0; i < numClients; i++) if (clients[i].ip == bannedIP[b]) { listed = true; break; }
+    for (int i = 0; i < numClients; i++) if (banMatches(bans[b], clients[i].ip, clients[i].mac)) { listed = true; break; }
     if (listed) continue;
-    j += (numClients || b ? "," : ""); j += "{\"ip\":\"" + IPAddress(bannedIP[b]).toString() + "\",\"mac\":\"00:00:00:00:00:00\",\"blocked\":0,\"allowed\":0,\"banned\":true}";
+    j += (numClients || b ? "," : ""); j += "{\"ip\":\"" + IPAddress(bans[b].ip).toString() + "\",\"mac\":\"" + macStr(bans[b].mac) + "\",\"blocked\":0,\"allowed\":0,\"banned\":true}";
   }
   j += "],\"custom\":[";
   for (int i = 0; i < numCustom; i++) { j += (i ? "," : ""); j += "\"" + jesc(customDom[i]) + "\""; }
@@ -984,10 +1053,20 @@ static void handleBan() {
   if (!requireAuth()) return;
   IPAddress ip;
   if (ip.fromString(web.arg("ip"))) {
+    // The dashboard sends the MAC it shows; otherwise use the client table, then ARP.
+    uint8_t mac[6] = {};
     bool banned, ok;
-    { StateLock lock; banned = !isBannedIP((uint32_t)ip); ok = setBanned((uint32_t)ip, banned); }
+    {
+      StateLock lock;
+      if (!parseMac(web.arg("mac"), mac) || !macKnown(mac)) {
+        memset(mac, 0, 6);
+        for (int i = 0; i < numClients; i++) if (clients[i].ip == (uint32_t)ip) memcpy(mac, clients[i].mac, 6);
+        if (!macKnown(mac)) getMac((uint32_t)ip, mac);
+      }
+      banned = !isBanned((uint32_t)ip, mac); ok = setBanned((uint32_t)ip, mac, banned);
+    }
     if (!ok) { web.send(507, "text/plain", "ban list is full (" + String(MAX_BAN) + " devices): unban one first"); return; }
-    audit(banned ? "ban" : "unban", ip.toString());
+    audit(banned ? "ban" : "unban", ip.toString() + (macKnown(mac) ? " " + macStr(mac) : String(" (by IP)")));
   }
   web.send(200, "text/plain", "ok");
 }

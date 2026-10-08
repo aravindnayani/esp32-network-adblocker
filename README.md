@@ -166,7 +166,11 @@ safe to use.
 - 📊 **Web dashboard** at `https://c3adblock.local`. Shows per-client block/allow counts,
   RSSI, temperature, heap, and uptime.
 - ⏸️ **Pause blocking** for a set time (Pi-hole-style "disable for 5 minutes").
-- 🙅 **Ban a client** and **add/remove custom blocked domains** from the browser.
+- 🙅 **Ban a client** and **add/remove custom blocked domains** from the browser. Bans
+  follow the device's MAC address, so changing its IP doesn't get around one. Devices
+  behind another router (whose MAC the blocker can't see) are banned by IP, and the ban
+  switches to the MAC once the device is seen on the local network. A device that changes
+  or randomizes its MAC still gets a fresh start.
 - 📶 **Captive-portal WiFi setup.** No hard-coded credentials.
 - 🔄 **OTA everything.** Upload a blocklist or firmware from the dashboard, push firmware
   over WiFi with `espota`, or let the device fetch a blocklist URL on a schedule.
