@@ -34,7 +34,7 @@
 <body>
 <div class="wrap">
   <h1>🛡️ <span class="g">C3 AdBlocker</span></h1>
-  <p class="sub">A network-wide DNS ad-blocker on a <span class="price">$2</span> ESP32-C3 — 141,000+ domains, no PSRAM. Flash it right here, no toolchain needed.</p>
+  <p class="sub">A network-wide DNS ad-blocker on a <span class="price">$2</span> ESP32-C3 — 100,000+ domains, no PSRAM. Flash it right here, no toolchain needed.</p>
 
   <div class="card" style="text-align:center">
     <p style="margin-top:0">Plug your ESP32-C3 (4 MB flash) or ESP32-S3 (8 MB+ flash) into this computer, then:</p>
@@ -54,7 +54,7 @@
     <b>What happens</b>
     <ol>
       <li>Click <b>Connect &amp; Install</b> and pick your ESP32-C3's serial port.</li>
-      <li>It flashes the firmware + a 141k-domain blocklist (~30s).</li>
+      <li>It flashes the firmware + a ~100k-domain blocklist (~30s).</li>
       <li>After it reboots, it makes a WiFi network called <code>C3-AdBlock-XXXX</code>. Its password is shown under <b>Logs &amp; Console</b> here (write it down). Join it from your phone, pick your WiFi, type the password.</li>
       <li>On the same page, choose a <b>dashboard admin password</b> (8+ characters, user name <code>admin</code>). It protects settings, blocklist uploads and firmware updates — until one is set, those stay locked.</li>
       <li>Set it as your router's secondary DNS (or per-device), and ads are blocked network-wide. Dashboard at <code>https://c3adblock.local</code>: your browser will warn about the device's self-signed certificate; check its fingerprint matches the one on the setup page, then accept it.</li>
