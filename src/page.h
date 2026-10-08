@@ -27,7 +27,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <span style=flex:1>🔒 Log in to see clients, custom domains, settings and the audit log. <span id=lockmsg class=b></span></span><button onclick=login()>Log in</button></div>
 <div id=blockbar style="display:flex;align-items:center;gap:12px;margin-bottom:14px;padding:12px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px">
 <span id=blockdot style=font-size:20px>🛡️</span><b id=blockstate style=flex:1 data-on=1>Blocking active</b>
-<select id=pausedur style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;padding:5px"><option value=30>30s</option><option value=300 selected>5 min</option><option value=1800>30 min</option><option value=0>until I re-enable</option></select>
+<select id=pausedur style="background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;padding:5px"><option value=30>30s</option><option value=300 selected>5 min</option><option value=900>15 min</option><option value=3600>1 hour</option><option value=0>until I re-enable</option></select>
 <button id=pausebtn onclick=togglePause()>Pause</button></div>
 <div id=confbar style="display:none;margin-bottom:14px;padding:12px 14px;background:#2d2410;border:1px solid #d29922;color:#f2cc60;border-radius:8px">
 👆 <b>Press the BOOT button on the device</b> to approve <b id=confwhat></b> <span id=confleft style=color:#8b949e></span></div>
@@ -52,7 +52,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <h2>WIFI</h2>
 <div style=margin-bottom:18px><button onclick="if(confirm('Forget saved WiFi and reboot into the setup portal?'))forgetWifi()">Forget WiFi</button></div>
 <h2>SECURITY</h2>
-<div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL, Forget WiFi and pausing blocking for more than 30 min</label></div>
+<div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL, Forget WiFi and pausing for more than 15 min an hour</label></div>
 <div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin></span></div>
 <table id=lt><thead><tr><th>Locked out</th><th>MAC</th><th>Wrong passwords</th><th>Status</th></tr></thead><tbody></tbody></table>
 <table id=at><thead><tr><th>When</th><th>From</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
@@ -64,10 +64,14 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 // though the server can't otherwise tell a forged request from a real one over
 // HTTP Basic Auth (browsers auto-replay cached Basic Auth cross-origin).
 const CSRF_HDRS={'X-Requested-With':'c3-adblock'}
-// Mirrors PAUSE_FREE_S in main.cpp: longer or indefinite pauses need a BOOT press.
+// With physical confirmation on, pauses beyond the free 15 min/hour (or indefinite) need a press.
 async function togglePause(){if(blockstate.dataset.on!='1'){fetch('/resume',{headers:CSRF_HDRS}).then(load);return}
-let s=+pausedur.value;if((s==0||s>1800)&&!await gated('pause'))return;
-let r=await fetch('/pause?s='+s,{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
+let v=pausedur.value,u='/pause?s='+v;
+if(physOn&&(v=='0'||+v>pauseFree)&&!await gated('pause',v))return;
+let r=await fetch(u,{headers:CSRF_HDRS});
+if(r.status==428&&await gated('pause',v))r=await fetch(u,{headers:CSRF_HDRS});
+if(!r.ok)alert(await r.text());load()}
+let physOn=false,pauseFree=0;
 // The summary is public; everything else in /stats.json only comes back when logged in.
 async function login(){let r=await fetch('/login',{headers:CSRF_HDRS});if(!r.ok)alert(await r.text());load()}
 async function load(){let s=await(await fetch('/stats.json',{headers:CSRF_HDRS})).json();
@@ -89,7 +93,7 @@ ct.tBodies[0].innerHTML=s.clients.sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a
 <td class=b>${fmt(c.blocked)}</td><td class=a>${fmt(c.allowed)}</td>
 <td><button class=ban data-ip="${esc(c.ip)}" data-mac="${esc(c.mac)}">${c.banned?'Unban':'Ban'}</button></td></tr>`).join('');
 cl.tBodies[0].innerHTML=s.custom.map(d=>`<tr><td>${esc(d)}</td><td style=text-align:right><button class=rmbtn data-d="${esc(d)}">remove</button></td></tr>`).join('')||'<tr><td style=color:#8b949e>none yet</td></tr>';
-physcb.checked=!!s.phys;otawin.textContent=s.otaWin?'Network OTA open for '+s.otaWin+'s.':'';
+physcb.checked=physOn=!!s.phys;pauseFree=s.pauseFree||0;otawin.textContent=s.otaWin?'Network OTA open for '+s.otaWin+'s.':'';
 showConf(s.confirm);
 lt.style.display=s.lockouts.length?'':'none';
 lt.tBodies[0].innerHTML=s.lockouts.map(l=>`<tr><td>${esc(l.ip)}</td><td>${esc(l.mac)}</td><td class=b>${l.fails}</td><td>${l.lockedFor?'<span class=b>locked, '+l.lockedFor+'s left</span>':'not locked yet'}</td></tr>`).join('');
@@ -100,16 +104,31 @@ if(document.activeElement!=uiv)uiv.value=s.upiv||24;
 ustat.textContent=s.upstat||'—';}
 function ago(t){return t<60?t+'s ago':t<3600?Math.floor(t/60)+'m ago':t<86400?Math.floor(t/3600)+'h ago':Math.floor(t/86400)+'d ago'}
 const ACTS={update:'flashing firmware',upload:'uploading a blocklist',setupdate:'changing the update URL',forgetwifi:'forgetting WiFi',phys:'turning off physical confirmation',pause:'pausing blocking'};
+function dur(s){return s<60?s+' s':s<3600?Math.round(s/60)+' min':Math.round(s/3600)+' h'}
+function confDesc(c){let d=ACTS[c.a]||c.a,p=c.p||'';
+if(c.a=='pause')d+=p=='0'?' until re-enabled':' for '+dur(+p);
+else if(c.a=='setupdate')d+=' to '+(p||'(none)');
+else if(/^\d+:[0-9a-f]{8}$/.test(p)){let[n,h]=p.split(':');d+=' ('+(n/1048576).toFixed(2)+' MB, checksum '+h+')'}
+return d}
 function showConf(c){confbar.style.display=c&&c.state=='pending'?'block':'none';
-if(c){confwhat.textContent=(ACTS[c.a]||c.a)+' (requested by '+c.ip+')';confleft.textContent=c.left+'s left'}}
+if(c){confwhat.textContent=confDesc(c)+' (requested by '+c.ip+')';confleft.textContent=c.left+'s left'}}
+// 32-bit FNV-1a, as on the device: an approval is bound to fnv(param), and uploads to "<size>:<fnv of the file>".
+function fnv(b,h=0x811c9dc5){for(let i=0;i<b.length;i++)h=Math.imul(h^b[i],16777619);return h>>>0}
+function hex8(h){return h.toString(16).padStart(8,'0')}
+async function fileTag(f){return f.size+':'+hex8(fnv(new Uint8Array(await f.arrayBuffer())))}
 let upurlNow='';
-// Ask the device for a BOOT-button approval of `a`, then wait for the press (or the timeout).
-// Resolves true once approved; the next request for that action uses the approval up.
-async function gated(a){let r=await fetch('/confirm?a='+a,{headers:CSRF_HDRS}),t=await r.text();
+// Ask the device for a BOOT-button approval of action `a` with parameter `p`, then wait for
+// the press (or the timeout). Resolves true once approved; the next request for that action
+// with that exact parameter uses the approval up.
+async function gated(a,p=''){let q='/confirm?a='+a+'&p='+encodeURIComponent(p),r=await fetch(q,{headers:CSRF_HDRS}),t=await r.text();
+if(r.status==409&&t.startsWith('this device')&&confirm(t+'\n\nCancel that request and ask again?')){
+await fetch('/confirm?cancel=1',{headers:CSRF_HDRS});r=await fetch(q,{headers:CSRF_HDRS});t=await r.text()}
 if(!r.ok){alert(t);return false}if(t=='approved')return true;
+let want=hex8(fnv(new TextEncoder().encode(p)));
 for(let i=0;i<40;i++){await new Promise(z=>setTimeout(z,800));
 let c=(await(await fetch('/stats.json',{headers:CSRF_HDRS})).json()).confirm;showConf(c);
 if(!c||c.a!=a){alert('Not confirmed: the BOOT button was not pressed in time.');return false}
+if(c.ph!=want){alert('Your request was cancelled and replaced by another one: '+confDesc(c)+'. Check the audit log.');return false}
 if(c.state=='approved'){showConf(null);return true}}
 return false}
 async function setPhys(){let on=physcb.checked;if(!on&&!await gated('phys')){physcb.checked=true;return}
@@ -117,14 +136,14 @@ let r=await fetch('/setphys?on='+(on?1:0),{headers:CSRF_HDRS});if(!r.ok)alert(aw
 function addDom(){let d=dom.value.trim();if(d){fetch('/addblock?d='+encodeURIComponent(d),{headers:CSRF_HDRS}).then(async r=>{if(r.ok)dom.value='';else alert(await r.text());load()})}}
 ct.addEventListener('click',e=>{if(e.target.classList.contains('ban'))fetch('/ban?ip='+encodeURIComponent(e.target.dataset.ip)+'&mac='+encodeURIComponent(e.target.dataset.mac),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})});
 cl.addEventListener('click',e=>{if(e.target.classList.contains('rmbtn'))fetch('/unblock?d='+encodeURIComponent(e.target.dataset.d),{headers:CSRF_HDRS}).then(load)});
-async function saveUpd(){if(uurl.value.trim()!=upurlNow&&!await gated('setupdate'))return;fetch('/setupdate?u='+encodeURIComponent(uurl.value.trim())+'&h='+(parseInt(uiv.value)||24),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})}
+async function saveUpd(){if(uurl.value.trim()!=upurlNow&&!await gated('setupdate',uurl.value.trim()))return;fetch('/setupdate?u='+encodeURIComponent(uurl.value.trim())+'&h='+(parseInt(uiv.value)||24),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})}
 function fetchNow(){ustat.textContent='fetching...';fetch('/fetchnow',{headers:CSRF_HDRS}).then(r=>r.text()).then(t=>{ustat.textContent=t;load()})}
 async function forgetWifi(){if(!await gated('forgetwifi'))return;fetch('/forgetwifi',{headers:CSRF_HDRS}).then(r=>r.text()).then(t=>alert(t))}
-fwf.onsubmit=async e=>{e.preventDefault();let f=fwb.files[0];if(!f)return;fwmsg.textContent='waiting for BOOT press...';if(!await gated('update')){fwmsg.textContent='';return}fwmsg.textContent='flashing '+(f.size/1048576).toFixed(2)+' MB...';
+fwf.onsubmit=async e=>{e.preventDefault();let f=fwb.files[0];if(!f)return;fwmsg.textContent='waiting for BOOT press...';if(!await gated('update',await fileTag(f))){fwmsg.textContent='';return}fwmsg.textContent='flashing '+(f.size/1048576).toFixed(2)+' MB...';
 let fd=new FormData();fd.append('f',f);
 try{let r=await fetch('/update',{method:'POST',headers:CSRF_HDRS,body:fd});fwmsg.textContent=r.ok?'✓ rebooting, reconnect in ~15s':'✗ '+await r.text();}
 catch(_){fwmsg.textContent='✓ rebooting, reconnect in ~15s';}};
-upf.onsubmit=async e=>{e.preventDefault();let f=blf.files[0];if(!f)return;upmsg.textContent='waiting for BOOT press...';if(!await gated('upload')){upmsg.textContent='';return}
+upf.onsubmit=async e=>{e.preventDefault();let f=blf.files[0];if(!f)return;upmsg.textContent='waiting for BOOT press...';if(!await gated('upload',await fileTag(f))){upmsg.textContent='';return}
 upmsg.textContent='uploading '+(f.size/1048576).toFixed(2)+' MB...';
 let fd=new FormData();fd.append('f',f);
 try{let r=await fetch('/upload',{method:'POST',headers:CSRF_HDRS,body:fd});upmsg.textContent=(r.ok?'✓ ':'✗ ')+await r.text();}
