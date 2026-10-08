@@ -12,6 +12,7 @@ on:
       - "src/**"
       - "platformio.ini"
       - "partitions.csv"
+      - "partitions-s3-8mb.csv"
       - "docs/**"
       - "tools/build_blocklist.py"
       - "tools/requirements-ci.txt"
