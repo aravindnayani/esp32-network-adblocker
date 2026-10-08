@@ -657,6 +657,32 @@ static void recordAuthFail(uint32_t ip) {
 }
 static void clearAuthFails(uint32_t ip) { LockEntry* e = findLock(ip); if (e) e->fails = 0; }
 
+// Device-wide limit. The per-IP lockout alone can be sidestepped by an attacker who spreads
+// guesses over many LAN addresses (each new IP starts at zero, and 16 slots means old
+// entries get evicted). So every wrong password, from anywhere, also adds GLOBAL_COST_MS
+// of "debt" that drains in real time; while debt exceeds GLOBAL_BURST_MS, every client is
+// refused without a password check. That allows a burst of ~20 wrong guesses, then one
+// per 45 s across the whole network, whatever the number of addresses. Since that can lock
+// the owner out too, a BOOT press with nothing pending clears it (and per-IP lockouts).
+static const uint32_t GLOBAL_COST_MS = 45000, GLOBAL_BURST_MS = 20 * GLOBAL_COST_MS;
+static uint32_t gDebtMs = 0, gDebtAt = 0;
+static uint32_t globalDebt() { uint32_t e = millis() - gDebtAt; return gDebtMs > e ? gDebtMs - e : 0; }
+static uint32_t globalLockedFor() {        // seconds left, 0 = not locked
+  uint32_t d = globalDebt();
+  return d > GLOBAL_BURST_MS ? (d - GLOBAL_BURST_MS + 999) / 1000 : 0;
+}
+static void recordGlobalFail() {
+  bool was = globalLockedFor();
+  gDebtMs = globalDebt() + GLOBAL_COST_MS; gDebtAt = millis();
+  if (!was && globalLockedFor()) auditIp(0, "global lock", "too many wrong passwords, all clients refused");
+}
+static bool clearAllLockouts() {           // true if anything was locked or counting
+  bool any = globalDebt() > 0;
+  for (int i = 0; i < LOCK_SLOTS; i++) if (locks[i].fails) { any = true; locks[i].fails = 0; }
+  gDebtMs = 0;
+  return any;
+}
+
 // ---------- auth ----------
 enum AuthResult { AUTH_OK, AUTH_HOST, AUTH_NOPASS, AUTH_CSRF, AUTH_LOCKED, AUTH_PROMPT, AUTH_CONFIRM };
 static AuthResult checkAuth() {
@@ -664,9 +690,9 @@ static AuthResult checkAuth() {
   if (!adminPass.length()) return AUTH_NOPASS;
   if (web.header(CSRF_HEADER) != CSRF_VALUE) return AUTH_CSRF;
   uint32_t ip = clientIp();
-  if (lockedFor(ip)) return AUTH_LOCKED;
+  if (lockedFor(ip) || globalLockedFor()) return AUTH_LOCKED;
   if (web.authenticate(WEB_USER, adminPass.c_str())) { clearAuthFails(ip); return AUTH_OK; }
-  if (web.hasHeader("Authorization")) recordAuthFail(ip);
+  if (web.hasHeader("Authorization")) { recordAuthFail(ip); recordGlobalFail(); }
   return AUTH_PROMPT;
 }
 static void sendAuthError(AuthResult r) {
@@ -675,9 +701,11 @@ static void sendAuthError(AuthResult r) {
     case AUTH_NOPASS:  web.send(403, "text/plain", "no admin password set: hold BOOT while powering on to run setup"); break;
     case AUTH_CSRF:    web.send(403, "text/plain", "missing CSRF header"); break;
     case AUTH_LOCKED: {
-      uint32_t s = lockedFor(clientIp());
+      uint32_t ipS = lockedFor(clientIp()), gS = globalLockedFor(), s = max(ipS, gS);
       web.sendHeader("Retry-After", String(s));
-      web.send(429, "text/plain", "too many wrong passwords from this device: try again in " + String(s) + " s");
+      web.send(429, "text/plain", String(ipS >= gS ? "too many wrong passwords from this device"
+                                                   : "too many wrong passwords on the network")
+                                  + ": try again in " + String(s) + " s, or press the device's BOOT button to clear it");
       break;
     }
     case AUTH_CONFIRM: web.send(428, "text/plain", "not confirmed: press the BOOT button on the device to approve this"); break;
@@ -769,9 +797,12 @@ static void confirmLoop() {
       pend.approved = true; pend.until = millis() + CONFIRM_USE_MS;
       auditIp(0, "BOOT pressed", String("approved ") + pend.action + " for " + IPAddress(pend.ip).toString());
       waiting = false;
-    } else if (physConfirm && otaPass.length()) {
-      otaWindowUntil = millis() + OTA_WINDOW_MS;
-      auditIp(0, "BOOT pressed", "network OTA open for 60 s");
+    } else {
+      if (clearAllLockouts()) auditIp(0, "BOOT pressed", "login lockouts cleared");
+      if (physConfirm && otaPass.length()) {
+        otaWindowUntil = millis() + OTA_WINDOW_MS;
+        auditIp(0, "BOOT pressed", "network OTA open for 60 s");
+      }
     }
   }
   ledSet(waiting ? (millis() / 150) & 1 : otaWindowOpen() ? (millis() / 600) & 1 : false);
@@ -792,6 +823,7 @@ static void handleStats() {
   if (confirmActive())
     j += ",\"confirm\":{\"a\":\"" + String(pend.action) + "\",\"ip\":\"" + IPAddress(pend.ip).toString() +
          "\",\"state\":\"" + (pend.approved ? "approved" : "pending") + "\",\"left\":" + ((pend.until - millis()) / 1000 + 1) + "}";
+  j += ",\"globalLock\":" + String(globalLockedFor());
   j += ",\"lockouts\":[";
   bool first = true;
   for (int i = 0; i < LOCK_SLOTS; i++) {

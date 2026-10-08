@@ -85,6 +85,9 @@ safe to use.
 - After **5 wrong passwords** from one IP, that IP gets `429` for 30 s, doubling with each
   further failure up to 1 h. A correct password resets the count. Locked-out clients are
   listed on the dashboard.
+- A **device-wide limit** stops guessing spread over many IPs: about 20 wrong passwords in a
+  burst, then one per 45 s across the whole network. Pressing **BOOT** (with nothing waiting
+  for approval) clears all lockouts.
 
 ### 📜 Audit log
 - The last **32 admin events** (actions, wrong passwords, lockouts, confirmations, BOOT
@@ -401,8 +404,11 @@ or `-DCONFIRM_LED=-1` for no LED.
 
 **Login lockout.** Five wrong passwords from one IP lock it out (`429` + `Retry-After`) for 30 s,
 doubling per further failure up to 1 h; a correct password resets it. Requests with no
-`Authorization` header (the browser's first try) don't count. It's per IP and tracks 16 IPs,
-so it slows guessing a lot but won't stop an attacker who controls many LAN addresses.
+`Authorization` header (the browser's first try) don't count. On top of that, every wrong
+password from any IP draws on one shared budget: a burst of about 20, refilling at one per
+45 s. Once it's used up, every client gets `429` without a password check, so spreading
+guesses over many LAN addresses gains nothing. Because that can lock the owner out too, a
+BOOT press with nothing pending clears all lockouts (it's logged in the audit log).
 
 **Audit log.** The last 32 admin events, with client IP/MAC, are on the dashboard. Like the
 rest of `/stats.json`, it's readable without a password; it is in RAM only and is lost on reboot.

@@ -48,6 +48,7 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <h2>SECURITY</h2>
 <div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL, Forget WiFi and pausing blocking for more than 30 min</label></div>
 <div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin></span></div>
+<div id=glock style="display:none;margin-bottom:10px;padding:10px 14px;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;font-size:13px"></div>
 <table id=lt><thead><tr><th>Locked out</th><th>MAC</th><th>Wrong passwords</th><th>Status</th></tr></thead><tbody></tbody></table>
 <table id=at><thead><tr><th>When</th><th>From</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
 </div><script>
@@ -79,6 +80,7 @@ ct.tBodies[0].innerHTML=s.clients.sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a
 cl.tBodies[0].innerHTML=s.custom.map(d=>`<tr><td>${esc(d)}</td><td style=text-align:right><button class=rmbtn data-d="${esc(d)}">remove</button></td></tr>`).join('')||'<tr><td style=color:#8b949e>none yet</td></tr>';
 physcb.checked=!!s.phys;otawin.textContent=s.otaWin?'Network OTA open for '+s.otaWin+'s.':'';
 showConf(s.confirm);
+glock.style.display=s.globalLock?'block':'none';glock.textContent=s.globalLock?'⛔ Too many wrong passwords across the network: every device is refused for '+s.globalLock+'s. Press BOOT on the device to clear it.':'';
 lt.style.display=s.lockouts.length?'':'none';
 lt.tBodies[0].innerHTML=s.lockouts.map(l=>`<tr><td>${esc(l.ip)}</td><td>${esc(l.mac)}</td><td class=b>${l.fails}</td><td>${l.lockedFor?'<span class=b>locked, '+l.lockedFor+'s left</span>':'not locked yet'}</td></tr>`).join('');
 at.tBodies[0].innerHTML=s.audit.map(a=>`<tr><td>${ago(a.ago)}</td><td>${esc(a.ip)}${a.mac?'<br><span style=color:#8b949e>'+esc(a.mac)+'</span>':''}</td><td>${esc(a.what)}</td><td>${esc(a.detail)}</td></tr>`).join('')||'<tr><td colspan=4 style=color:#8b949e>no admin activity since boot</td></tr>';
