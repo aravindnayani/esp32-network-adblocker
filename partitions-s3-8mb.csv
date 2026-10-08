@@ -1,0 +1,9 @@
+# Dual-OTA layout for ESP32-S3 with 8 MB flash: two 1.5MB app slots + LittleFS (blocklist).
+# spiffs is 0x4F0000 (5,177,344 bytes): ~1M domains @ 5 bytes, or ~500k with room to keep
+# the old list while a new one downloads.
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x5000
+otadata,    data, ota,     0xe000,   0x2000
+app0,       app,  ota_0,   0x10000,  0x180000
+app1,       app,  ota_1,   0x190000, 0x180000
+spiffs,     data, spiffs,  0x310000, 0x4F0000

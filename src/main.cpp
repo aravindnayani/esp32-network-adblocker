@@ -43,9 +43,15 @@ static const uint16_t DNS_PORT = 53;
 static const char* BLOCKLIST_PATH = "/blocklist.bin";
 static const int HASH_BYTES = 5;
 static const uint64_t HASH_MASK = (1ULL << (HASH_BYTES * 8)) - 1;
-static const int INDEX_ENTRIES = 4096;   // 20 KB first-level flash index
+// First-level flash index. A lookup reads at most MAX_RANGE hashes from one bucket, so the
+// index must keep numHashes / INDEX_ENTRIES under MAX_RANGE or lookups miss entries.
+#if CONFIG_IDF_TARGET_ESP32S3
+static const int INDEX_ENTRIES = 16384;  // 80 KB; 8 MB flash holds ~1M hashes (~64/bucket), fine to ~4M
+#else
+static const int INDEX_ENTRIES = 4096;   // 20 KB; fine up to ~1M hashes, 4 MB flash holds far fewer
+#endif
 static const int CACHE_SIZE = 256;       // must be power of 2
-static const int MAX_RANGE = 256;        // max hashes per index bucket (fine up to ~1M hashes; flash holds far fewer)
+static const int MAX_RANGE = 256;        // max hashes per index bucket
 
 // ---- globals ----
 // The dashboard's WebServer listens on loopback only. Browsers reach it through the TLS
@@ -133,13 +139,16 @@ uint32_t resumeAt   = 0;            // millis() to auto-resume; 0 = paused indef
 #if CONFIG_IDF_TARGET_ESP32C3
 static const int BOOT_PIN = 9;      // C3 BOOT button
 #else
-static const int BOOT_PIN = 0;      // classic ESP32 BOOT button (GPIO9 is a flash pin there)
+static const int BOOT_PIN = 0;      // classic ESP32 and S3 BOOT button (GPIO9 is a flash pin on the classic ESP32)
 #endif
 // LED that blinks while an action waits for the button. -DCONFIRM_LED=-1 to disable.
 #ifndef CONFIRM_LED
 #if CONFIG_IDF_TARGET_ESP32C3
 #define CONFIRM_LED 8               // C3 SuperMini blue LED (active low)
 #define CONFIRM_LED_ON LOW
+#elif CONFIG_IDF_TARGET_ESP32S3
+#define CONFIRM_LED 48              // S3 DevKitC-1 WS2812 RGB LED (GPIO38 on v1.1 boards)
+#define CONFIRM_LED_RGB 1
 #else
 #define CONFIRM_LED 2               // most esp32dev boards (active high)
 #define CONFIRM_LED_ON HIGH
@@ -1174,7 +1183,13 @@ static uint32_t otaWindowUntil = 0;
 static bool confirmActive() { return pend.action[0] && (int32_t)(pend.until - millis()) > 0; }
 static bool otaWindowOpen() { return otaWindowUntil && (int32_t)(otaWindowUntil - millis()) > 0; }
 static void ledSet(bool on) {
-  if (CONFIRM_LED >= 0) digitalWrite(CONFIRM_LED, on ? CONFIRM_LED_ON : !CONFIRM_LED_ON);
+  if (CONFIRM_LED < 0) return;
+#ifdef CONFIRM_LED_RGB
+  uint8_t v = on ? 64 : 0;                       // addressable LED: dim white or off
+  neopixelWrite(CONFIRM_LED, v, v, v);
+#else
+  digitalWrite(CONFIRM_LED, on ? CONFIRM_LED_ON : !CONFIRM_LED_ON);
+#endif
 }
 static void loadPhys() { prefs.begin("auth", true); physConfirm = prefs.getBool("phys", true); prefs.end(); }
 static void savePhys() { prefs.begin("auth", false); prefs.putBool("phys", physConfirm); prefs.end(); }

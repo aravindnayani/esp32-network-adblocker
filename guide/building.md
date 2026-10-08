@@ -14,7 +14,7 @@ pio run -t uploadfs                                 # blocklist
 pio device monitor                                  # shows setup password, cert fingerprint, IP
 ```
 
-For a classic ESP32, add `-e esp32dev` to every `pio` command.
+For a classic ESP32, add `-e esp32dev` to every `pio` command. For an ESP32-S3 with 8 MB+ flash, add `-e s3`. It has room for about 1M blocked domains instead of about 250k.
 
 > **Use a recent PlatformIO.** The distro/apt package (e.g. 4.3.4) is too old and fails with `AttributeError: ... 'resultcallback'`. Install it with `pip install -U platformio` in a venv, or use the VS Code extension.
 >
@@ -39,7 +39,7 @@ Good to know:
 - `@@` only removes that exact entry. It can't unblock one subdomain of a blocked parent.
 - If a source fails to download, the build stops. Pass `--allow-missing` to continue anyway.
 
-**The "everything" list (~500k entries).** This also blocks social and messaging apps, and it only fits the single-app partition layout:
+**The "everything" list (~500k entries).** This also blocks social and messaging apps. On a 4 MB C3 it only fits the single-app partition layout. The S3 build fits it alongside OTA:
 
 ```bash
 python3 tools/build_blocklist.py data/blocklist.bin \
@@ -53,7 +53,7 @@ python3 tools/build_blocklist.py data/blocklist.bin \
 |---|---|
 | Blocklist, one-off | Dashboard → *Blocklist → Upload* a `blocklist.bin` |
 | Blocklist, scheduled | Dashboard → set an https URL and an interval (1–720 h) |
-| Firmware, browser | Dashboard → *Firmware → OTA update* with `.pio/build/c3/firmware.bin` |
+| Firmware, browser | Dashboard → *Firmware → OTA update* with `.pio/build/c3/firmware.bin` (or `.pio/build/s3/firmware.bin`) |
 | Firmware, command line | `pio run -t upload --upload-port c3adblock.local --upload-protocol espota` |
 
 Uploads, new URLs and firmware all need a BOOT press (see [security.md](security.md)). `espota` asks for `OTA_PASS`, or the admin password if `OTA_PASS` isn't set.
@@ -75,13 +75,15 @@ The dashboard tells you which of these happened.
 | Admin password | setup portal, else `WEB_PASS` | none, so everything stays locked |
 | OTA password | `OTA_PASS` | the admin password |
 | Who may use DNS | `-DDNS_SUBNET_ONLY` | own subnet + private ranges |
-| BOOT LED | `-DCONFIRM_LED=<gpio>`, `-DCONFIRM_LED_ON=HIGH\|LOW`, `-1` for none | GPIO 8 (C3), GPIO 2 (esp32dev) |
+| BOOT LED | `-DCONFIRM_LED=<gpio>`, `-DCONFIRM_LED_ON=HIGH\|LOW`, `-1` for none. Add `-DCONFIRM_LED_RGB` for an addressable (WS2812) LED. | GPIO 8 (C3), GPIO 48 RGB (S3; use `-DCONFIRM_LED=38 -DCONFIRM_LED_RGB` on DevKitC-1 v1.1), GPIO 2 (esp32dev) |
 | Hash width | `HASH_BYTES` in `main.cpp` **and** `build_blocklist.py` | 5. The two must match. |
 | Limits | `main.cpp` | 96 clients, 200 custom domains, 32 bans |
 
 A custom upstream host must match its certificate, and that certificate's root CA must be in `src/ca_bundle.h`. To add a CA, edit `ROOTS` in `tools/gen_ca_bundle.py`, then run `pip install certifi && python3 tools/gen_ca_bundle.py`.
 
-## Partition layout (4 MB)
+## Partition layout
+
+### ESP32-C3 and classic ESP32, 4 MB (`partitions.csv`)
 
 | Partition | Offset | Size |
 |---|---|---|
@@ -90,11 +92,22 @@ A custom upstream host must match its certificate, and that certificate's root C
 | app0 / app1 | `0x10000` / `0x160000` | 1.3125 MB each |
 | spiffs (blocklist) | `0x2b0000` | 1.3125 MB |
 
+### ESP32-S3, 8 MB (`partitions-s3-8mb.csv`)
+
+| Partition | Offset | Size |
+|---|---|---|
+| nvs | `0x9000` | 20 KB |
+| otadata | `0xe000` | 8 KB |
+| app0 / app1 | `0x10000` / `0x190000` | 1.5 MB each |
+| spiffs (blocklist) | `0x310000` | ~4.9 MB |
+
+The S3 also uses a 4× larger lookup index (80 KB of RAM), so buckets stay small at a million entries.
+
 ## CI
 
 | Workflow | When | What |
 |---|---|---|
-| [`build.yml`](../.github/workflows/build.yml) | push to `main`, PRs | Builds `c3` + `esp32dev`, tests the blocklist tool |
+| [`build.yml`](../.github/workflows/build.yml) | push to `main`, PRs | Builds `c3`, `esp32dev` + `s3`, tests the blocklist tool |
 | [`blocklist.yml`](../.github/workflows/blocklist.yml) | Mondays 04:17 UTC | Rebuilds the default list and publishes it to the `blocklist` release |
 | [`flasher.yml`](../.github/workflows/flasher.yml) | push to `main` | Builds credential-free installer images, checks them, and deploys to GitHub Pages |
 

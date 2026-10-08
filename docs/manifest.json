@@ -12,6 +12,16 @@
         { "path": "firmware.bin", "offset": 65536 },
         { "path": "littlefs.bin", "offset": 2818048 }
       ]
+    },
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "s3/bootloader.bin", "offset": 0 },
+        { "path": "s3/partitions.bin", "offset": 32768 },
+        { "path": "boot_app0.bin", "offset": 57344 },
+        { "path": "s3/firmware.bin", "offset": 65536 },
+        { "path": "s3/littlefs.bin", "offset": 3211264 }
+      ]
     }
   ]
 }

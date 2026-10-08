@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Preprocess hosts/domain blocklists into a sorted truncated-FNV-1a hash blob
-for the ESP32-C3 ad-blocker. Hashes live in flash and are binary-searched on the
+for the ESP32-C3 / ESP32-S3 ad-blocker. Hashes live in flash and are binary-searched on the
 device, so no PSRAM is needed.
 
 HASH_BYTES MUST match the firmware (src/main.cpp). 5 bytes (40-bit) keeps
@@ -28,8 +28,9 @@ U64 = (1 << 64) - 1
 # Daily driver that FITS alongside dual-OTA firmware slots (~250k domain budget):
 # ads + trackers + malware, WhatsApp/social keep working. ~100k entries / 0.5 MB
 # (Hagezi's wildcard lists drop subdomains the firmware's parent-matching already covers).
-# Want more? swap light-onlydomains.txt -> pro-onlydomains.txt is 370k and ONLY fits the
-# single-app (no-OTA) partition table.
+# Want more? swap light-onlydomains.txt -> pro-onlydomains.txt is 370k and on a 4 MB C3
+# ONLY fits the single-app (no-OTA) partition table. The S3 8 MB layout
+# (partitions-s3-8mb.csv) holds ~1M entries alongside OTA.
 DEFAULT_SOURCES = [
     'https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts',            # base: ads + malware
     'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/light-onlydomains.txt',  # Hagezi Light (wildcard = domain + subdomains)
@@ -115,6 +116,8 @@ def main():
     print(f'collisions       : {collisions}  (domains sharing a hash -> over-block)')
     print(f'flash blob       : {size:,} bytes  ({size/1024/1024:.2f} MB)  -> {out}')
     print(f'lookup           : ~{math.ceil(math.log2(max(n,2)))} reads/query')
+    if size > 0x150000 - 16384:
+        print('note             : too big for the 4 MB C3 layout; needs the S3 8 MB build')
 
 if __name__ == '__main__':
     main()

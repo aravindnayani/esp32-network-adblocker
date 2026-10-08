@@ -22,6 +22,8 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 
 **You need:** an ESP32-C3 board with 4 MB flash (a C3 SuperMini works well), a USB cable, and Chrome or Edge on a computer.
 
+Want a bigger blocklist? An ESP32-S3 with 8 MB+ flash also works, and it holds about 1M domains instead of about 250k. It costs more ($5–10) and is bigger.
+
 1. **Flash it.** Open this repo's GitHub Pages installer, plug in the board, and click **⚡ Connect & Install**. It takes about 30 seconds.
 2. **Get the setup password.** In the installer, open **Logs & Console**. The device prints the password for its setup WiFi there. Write it down.
 3. **Join the setup WiFi** `C3-AdBlock-XXXX` from your phone with that password. A setup page opens.

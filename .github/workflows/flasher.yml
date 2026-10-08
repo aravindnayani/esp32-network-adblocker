@@ -55,6 +55,8 @@ jobs:
         run: |
           pio run -e c3
           pio run -e c3 -t buildfs
+          pio run -e s3
+          pio run -e s3 -t buildfs
 
       - name: Assemble site
         run: |
@@ -73,6 +75,8 @@ jobs:
           mkdir ewt && tar xzf ewt.tgz -C ewt
           cp -r ewt/package/dist/web "$out/esp-web-tools"
           cp "$b/bootloader.bin" "$b/partitions.bin" "$b/firmware.bin" "$b/littlefs.bin" "$out/"
+          s3=.pio/build/s3; mkdir -p "$out/s3"
+          cp "$s3/bootloader.bin" "$s3/partitions.bin" "$s3/firmware.bin" "$s3/littlefs.bin" "$out/s3/"
           cp ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin "$out/"
           version="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
           jq --arg v "$version" '.version = $v' docs/manifest.json > "$out/manifest.json"
@@ -82,13 +86,20 @@ jobs:
         run: |
           set -euo pipefail
           # Guard against ever shipping an unauthenticated build again.
-          for s in "missing CSRF header" "bad Host header" "no admin password set" "too many wrong passwords" "press the BOOT button"; do
-            grep -q "$s" site/firmware.bin || { echo "firmware.bin lacks '$s'"; exit 1; }
+          for fw in site/firmware.bin site/s3/firmware.bin; do
+            for s in "missing CSRF header" "bad Host header" "no admin password set" "too many wrong passwords" "press the BOOT button"; do
+              grep -q "$s" "$fw" || { echo "$fw lacks '$s'"; exit 1; }
+            done
           done
-          # Manifest offsets must match partitions.csv.
-          off() { echo $(( $(awk -F, -v n="$1" '$1 ~ "^"n" *$" {gsub(/ /,"",$4); print $4}' partitions.csv) )); }
-          test "$(jq '.builds[0].parts[] | select(.path=="firmware.bin").offset' site/manifest.json)" -eq "$(off app0)"
-          test "$(jq '.builds[0].parts[] | select(.path=="littlefs.bin").offset' site/manifest.json)" -eq "$(off spiffs)"
+          # Manifest offsets must match each build's partition table.
+          off() { echo $(( $(awk -F, -v n="$2" '$1 ~ "^"n" *$" {gsub(/ /,"",$4); print $4}' "$1") )); }
+          part() { jq --arg c "$1" --arg p "$2" '.builds[] | select(.chipFamily==$c) | .parts[] | select(.path==$p).offset' site/manifest.json; }
+          test "$(part ESP32-C3 firmware.bin)" -eq "$(off partitions.csv app0)"
+          test "$(part ESP32-C3 littlefs.bin)" -eq "$(off partitions.csv spiffs)"
+          test "$(part ESP32-S3 s3/firmware.bin)" -eq "$(off partitions-s3-8mb.csv app0)"
+          test "$(part ESP32-S3 s3/littlefs.bin)" -eq "$(off partitions-s3-8mb.csv spiffs)"
+          # Every file the manifest names must be in the site.
+          for f in $(jq -r '.builds[].parts[].path' site/manifest.json); do test -f "site/$f" || { echo "missing site/$f"; exit 1; }; done
           # The page must load the self-hosted installer, never a CDN copy.
           test -f site/esp-web-tools/install-button.js
           if grep -qE '<script[^>]+src="https?://' site/index.html; then echo "index.html loads a remote script"; exit 1; fi
