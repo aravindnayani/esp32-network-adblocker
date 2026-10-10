@@ -86,6 +86,10 @@ Dev clients[MAX_CLIENTS]; int numClients = 0;
 
 static const int MAX_CUSTOM = 200;
 String customDom[MAX_CUSTOM]; uint64_t customHash[MAX_CUSTOM]; int numCustom = 0;
+// Exceptions: domains (and their subdomains) that are never blocked, whatever the blocklist
+// or the custom list says. Kept in /allow.txt.
+static const int MAX_ALLOW = 100;
+String allowDom[MAX_ALLOW]; uint64_t allowHash[MAX_ALLOW]; int numAllow = 0;
 
 // Bans live only in this list (persisted to /banned.txt), never in the client table: the
 // table is a best-effort stats cache that evicts, so a ban stored there could be pushed out
@@ -241,7 +245,19 @@ static bool isBlockedHash(uint64_t h) {
   return res;
 }
 
+static bool inAllow(uint64_t h) { for (int i = 0; i < numAllow; i++) if (allowHash[i] == h) return true; return false; }
+
 static bool isBlocked(const char* domain) {
+  // An exception for a domain or any parent of it wins over every block: "allow
+  // whatsapp.com" lets web.whatsapp.com through even when a list blocks it by name.
+  if (numAllow) {
+    const char* p = domain;
+    while (p && *p) {
+      if (inAllow(fnv40(p, strlen(p)))) return false;
+      const char* dot = strchr(p, '.'); if (!dot) break;
+      const char* next = dot + 1; if (!strchr(next, '.')) break; p = next;
+    }
+  }
   const char* p = domain;
   while (p && *p) {
     uint64_t h = fnv40(p, strlen(p));
@@ -303,6 +319,32 @@ static void removeCustom(String& d) {
   for (int i = 0; i < numCustom; i++) if (customDom[i] == d) {
     for (int j = i; j < numCustom - 1; j++) { customDom[j] = customDom[j+1]; customHash[j] = customHash[j+1]; }
     numCustom--; saveCustom(); return;
+  }
+}
+// Exceptions, stored and checked the same way as custom domains.
+static void loadAllow() {
+  numAllow = 0; File f = LittleFS.open("/allow.txt", "r"); if (!f) return;
+  while (f.available() && numAllow < MAX_ALLOW) {
+    String l = f.readStringUntil('\n');
+    if (normDomain(l)) continue;
+    bool dup = false;
+    for (int i = 0; i < numAllow; i++) if (allowDom[i] == l) { dup = true; break; }
+    if (!dup) { allowDom[numAllow] = l; allowHash[numAllow] = fnv40(l.c_str(), l.length()); numAllow++; }
+  }
+  f.close();
+}
+static void saveAllow() { File f = LittleFS.open("/allow.txt", "w"); if (!f) return; for (int i = 0; i < numAllow; i++) f.println(allowDom[i]); f.close(); }
+static const char* addAllow(String& d) {
+  if (const char* why = normDomain(d)) return why;
+  for (int i = 0; i < numAllow; i++) if (allowDom[i] == d) return nullptr;      // already allowed: not an error (quick picks re-add)
+  if (numAllow >= MAX_ALLOW) return "exception list is full (100 domains)";
+  allowDom[numAllow] = d; allowHash[numAllow] = fnv40(d.c_str(), d.length()); numAllow++; saveAllow(); return nullptr;
+}
+static void removeAllow(String& d) {
+  if (normDomain(d)) return;
+  for (int i = 0; i < numAllow; i++) if (allowDom[i] == d) {
+    for (int j = i; j < numAllow - 1; j++) { allowDom[j] = allowDom[j+1]; allowHash[j] = allowHash[j+1]; }
+    numAllow--; saveAllow(); return;
   }
 }
 static bool macKnown(const uint8_t* m) { for (int i = 0; i < 6; i++) if (m[i]) return true; return false; }
@@ -1340,7 +1382,7 @@ static void handleStats() {
   if (!admin) { web.send(200, "application/json", j + "}"); return; }
   j += ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
        ",\"phys\":" + (physConfirm ? "true" : "false") + ",\"otaWin\":" + (otaWindowOpen() ? (otaWindowUntil - millis()) / 1000 + 1 : 0) +
-       ",\"pauseFree\":" + pauseFreeLeft();
+       ",\"pauseFree\":" + pauseFreeLeft() + ",\"you\":\"" + IPAddress(clientIp()).toString() + "\"";
   if (confirmActive()) {
     char ph[9]; snprintf(ph, sizeof(ph), "%08x", (unsigned)pend.ph);
     j += ",\"confirm\":{\"a\":\"" + String(pend.action) + "\",\"p\":\"" + jesc(pend.detail) + "\",\"ph\":\"" + ph +
@@ -1375,6 +1417,8 @@ static void handleStats() {
   }
   j += "],\"custom\":[";
   for (int i = 0; i < numCustom; i++) { j += (i ? "," : ""); j += "\"" + jesc(customDom[i]) + "\""; }
+  j += "],\"allow\":[";
+  for (int i = 0; i < numAllow; i++) { j += (i ? "," : ""); j += "\"" + jesc(allowDom[i]) + "\""; }
   j += "]}";
   web.send(200, "application/json", j);
 }
@@ -1960,37 +2004,114 @@ static void handlePortalRoot() {
     "</form>" + tlsNote() + "</body>";
   portalWeb.send(200, "text/html", html);
 }
-static void handleWifiSave() {
-  String ss = portalWeb.arg("s"), pw = portalWeb.arg("p"), ap = portalWeb.arg("a");
-  if (!ss.length()) { portalWeb.send(400, "text/plain", "missing WiFi name"); return; }
+// Save WiFi + admin password from the setup page or from USB (PROVISION, below), with the
+// same rules for both: a configured device needs its current admin password unless BOOT was
+// held at power-on. Returns an HTTP status; on anything but 200, err says why.
+static int saveProvision(const String& ss, const String& pw, const String& ap, const String& cur, String& err) {
+  if (!ss.length() || ss.length() > 32) { err = "WiFi name must be 1 to 32 bytes"; return 400; }
+  if (pw.length() && (pw.length() < 8 || pw.length() > 64)) { err = "WiFi password must be 8 to 63 characters (or empty for an open network)"; return 400; }
   if (portalNeedsPass()) {
     if (portalFails >= PORTAL_MAX_FAILS) {
-      portalWeb.send(429, "text/plain", "too many wrong passwords: power-cycle the device, or hold BOOT while powering on to reset it");
-      return;
+      err = "too many wrong passwords: power-cycle the device, or hold BOOT while powering on to reset it"; return 429;
     }
-    if (!verifyAdminPass(portalWeb.arg("c"))) {
+    if (!verifyAdminPass(cur)) {
       portalFails++;
       Serial.printf("[setup] wrong current admin password (%u/%u)\n", portalFails, PORTAL_MAX_FAILS);
       delay(1000);
-      portalWeb.send(403, "text/plain", "wrong current admin password");
-      return;
+      err = "wrong current admin password"; return 403;
     }
   }
-  if (ap.length() ? ap.length() < MIN_ADMIN_PASS : !adminSet) {
-    portalWeb.send(400, "text/plain", "admin password must be at least 8 characters"); return;
-  }
+  if (ap.length() ? ap.length() < MIN_ADMIN_PASS : !adminSet) { err = "admin password must be at least 8 characters"; return 400; }
   if (ap.length()) setAdminPass(ap, true);
   prefs.begin("wifi", false); prefs.putString("ssid", ss); prefs.putString("pass", pw); prefs.end();
+  return 200;
+}
+static void handleWifiSave() {
+  String ss = portalWeb.arg("s"), err;
+  int code = saveProvision(ss, portalWeb.arg("p"), portalWeb.arg("a"), portalWeb.arg("c"), err);
+  if (code != 200) { portalWeb.send(code, "text/plain", err); return; }
   portalWeb.send(200, "text/html", "<!doctype html><meta charset=utf-8><body style='font:16px system-ui;text-align:center;margin-top:60px'>"
                              "&#9989; Saved. Restarting and joining <b>" + htmlEscape(ss) + "</b>&hellip;<br><br>"
                              "Reconnect your phone to your normal WiFi, then find the box at <b>c3adblock.local</b>.</body>");
   delay(900); ESP.restart();
 }
+// ---------- USB serial commands (used by start-here.py) ----------
+// Whoever is on the USB port can already reflash the chip or read the setup password the
+// console prints, so these give nothing away: they let the setup helper do from the
+// computer what the setup page does from a phone. One command per line:
+//   INFO                               -> [info] mode=<setup|online> ip=... ap="..." fp=...
+//   NETS                               -> [nets] <hex ssid>,<hex ssid>,...   (setup mode only)
+//   PROVISION <ssid> <pass> <admin> [<current admin>]   all hex-encoded UTF-8, empty = "-"
+//                                      -> [provision] ok   (then restarts and joins)
+//                                      -> [provision] error <code> <reason>
+static String serialLine;
+static String portalNets;                      // scanned SSIDs, hex, comma-separated (for NETS)
+static bool inPortal = false;
+static String hexDecode(const String& h, bool& ok) {
+  String out; ok = true;
+  if (h == "-") return out;
+  if (h.length() % 2 || h.length() > 256) { ok = false; return out; }
+  for (unsigned i = 0; i < h.length(); i += 2) {
+    char b[3] = { h[i], h[i + 1], 0 }; char* end;
+    long v = strtol(b, &end, 16);
+    if (*end || !v) { ok = false; return out; }            // NUL would cut the string short
+    out += (char)v;
+  }
+  return out;
+}
+static String hexEncode(const String& s) {
+  static const char H[] = "0123456789abcdef"; String out;
+  for (unsigned i = 0; i < s.length(); i++) { uint8_t c = s[i]; out += H[c >> 4]; out += H[c & 15]; }
+  return out;
+}
+static void serialCommand(String line) {
+  line.trim();
+  int sp = line.indexOf(' ');
+  String cmd = sp < 0 ? line : line.substring(0, sp);
+  String rest = sp < 0 ? String("") : line.substring(sp + 1);
+  if (cmd == "INFO") {
+    Serial.printf("[info] mode=%s ip=%s ap=\"%s\" fp=%s admin=%s\n", inPortal ? "setup" : "online",
+                  inPortal ? "" : WiFi.localIP().toString().c_str(), setupApName().c_str(),
+                  tlsFingerprint.c_str(), adminSet ? "set" : "unset");
+  } else if (cmd == "NETS") {
+    if (!inPortal) { Serial.println("[nets] error not in setup mode"); return; }
+    Serial.println("[nets] " + portalNets);
+  } else if (cmd == "PROVISION") {
+    if (!inPortal) { Serial.println("[provision] error 409 already online: hold BOOT while powering on to set it up again"); return; }
+    String f[4]; int n = 0;
+    while (rest.length() && n < 4) {
+      int s2 = rest.indexOf(' ');
+      f[n++] = s2 < 0 ? rest : rest.substring(0, s2);
+      rest = s2 < 0 ? String("") : rest.substring(s2 + 1);
+    }
+    if (n < 3) { Serial.println("[provision] error 400 usage: PROVISION <ssid> <pass> <admin> [<current>]"); return; }
+    bool ok1, ok2, ok3, ok4;
+    String ss = hexDecode(f[0], ok1), pw = hexDecode(f[1], ok2), ap = hexDecode(f[2], ok3), cur = hexDecode(n > 3 ? f[3] : String("-"), ok4);
+    if (!(ok1 && ok2 && ok3 && ok4)) { Serial.println("[provision] error 400 fields must be hex"); return; }
+    String err; int code = saveProvision(ss, pw, ap, cur, err);
+    if (code != 200) { Serial.printf("[provision] error %d %s\n", code, err.c_str()); return; }
+    Serial.printf("[provision] ok, restarting to join \"%s\"\n", ss.c_str());
+    Serial.flush(); delay(500); ESP.restart();
+  } else if (cmd.length()) {
+    Serial.printf("[cmd] unknown command %s (INFO, NETS, PROVISION)\n", cmd.c_str());
+  }
+}
+static void pollSerial() {
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\n' || ch == '\r') { if (serialLine.length()) serialCommand(serialLine); serialLine = ""; }
+    else if (serialLine.length() < 800) serialLine += ch;    // longest PROVISION line is ~720
+  }
+}
+
 // Never returns — blocks in the portal loop until creds are saved (then reboots).
 static void startConfigPortal() {
+  inPortal = true;
   int n = WiFi.scanNetworks();                 // scan while still in STA mode (no APSTA)
   portalOpts = "";
   for (int i = 0; i < n && i < 15; i++) portalOpts += "<option value='" + htmlEscape(WiFi.SSID(i)) + "'>";
+  portalNets = "";
+  for (int i = 0; i < n && i < 20; i++) { if (i) portalNets += ","; portalNets += hexEncode(WiFi.SSID(i)); }
   String ap = setupApName();
   WiFi.mode(WIFI_AP); WiFi.softAP(ap.c_str(), setupPass.c_str());
   IPAddress apIP = WiFi.softAPIP();
@@ -2006,7 +2127,7 @@ static void startConfigPortal() {
   const bool configured = hasCreds();
   uint32_t t0 = millis(), shown = millis();
   while (true) {
-    dnsPortal.processNextRequest(); portalWeb.handleClient(); delay(2);
+    dnsPortal.processNextRequest(); portalWeb.handleClient(); pollSerial(); delay(2);
     if (millis() - shown > 15000) {                                // for whoever opens the serial console late
       shown = millis();
       Serial.printf("[setup] setup WiFi \"%s\", password %s\n", ap.c_str(), setupPass.c_str());
@@ -2027,8 +2148,8 @@ void setup() {
     Serial.printf("blocklist: %u domains\n", numHashes);
     buildFlashIndex();
   }
-  loadCustom(); loadBanned(); loadUpdateCfg();
-  Serial.printf("custom: %d, banned: %d\n", numCustom, numBanned);
+  loadCustom(); loadAllow(); loadBanned(); loadUpdateCfg();
+  Serial.printf("custom: %d, exceptions: %d, banned: %d\n", numCustom, numAllow, numBanned);
 
   // Hold BOOT at power-on to wipe saved WiFi and force the setup portal.
   // Physical access is the recovery path for a forgotten admin password, so this clears it
@@ -2071,6 +2192,14 @@ void setup() {
     audit("block domain", d); web.send(200, "text/plain", "ok");
   });
   web.on("/unblock", []() { if (!requireAuth()) return; String d = web.arg("d"); { StateLock lock; removeCustom(d); } audit("unblock domain", d); web.send(200, "text/plain", "ok"); });
+  web.on("/allow", []() {                    // /allow?d=<domain>: never block it (or its subdomains)
+    if (!requireAuth()) return;
+    String d = web.arg("d"); const char* why;
+    { StateLock lock; why = addAllow(d); }
+    if (why) { web.send(400, "text/plain", why); return; }
+    audit("allow domain", d); web.send(200, "text/plain", "ok");
+  });
+  web.on("/unallow", []() { if (!requireAuth()) return; String d = web.arg("d"); { StateLock lock; removeAllow(d); } audit("remove exception", d); web.send(200, "text/plain", "ok"); });
   web.on("/pause", handlePause);             // /pause?s=300  (0 or absent = indefinite)
   web.on("/resume", []() { if (!requireAuth()) return; blockingOn = true; resumeAt = 0; audit("resume"); web.send(200, "text/plain", "resumed"); });
   web.on("/confirm", handleConfirm);         // /confirm?a=<action>&p=<param>: start waiting for a BOOT press
@@ -2128,6 +2257,7 @@ void setup() {
 
 void loop() {
   confirmLoop();
+  pollSerial();                           // INFO over USB (start-here.py finds the IP this way)
   // With physical confirmation on, espota only gets an answer for a minute after a BOOT
   // press. An accepted upload runs to completion inside this one handle() call.
   if (otaHashHex.length() && (!physConfirm || otaWindowOpen())) ArduinoOTA.handle();

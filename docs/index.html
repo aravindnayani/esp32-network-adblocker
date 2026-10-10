@@ -45,14 +45,13 @@
       <span slot="not-allowed" class="unsupported">You need to allow the serial port.</span>
     </esp-web-install-button>
     <!-- Outside the button on purpose: an unsupported install button is hidden entirely. -->
-    <p class="no-serial" id="no-serial" hidden>This browser can't flash over USB. On <b>Safari</b> or <b>Firefox</b>, flash with esptool instead:
-      download <a href="./adblock-c3.bin">adblock-c3.bin</a> or <a href="./adblock-s3.bin">adblock-s3.bin</a>
-      (<a href="./SHA256SUMS">checksums</a>) and follow <code>START-HERE.html</code> in the
-      <a href="https://github.com/aravindnayani/esp32-network-adblocker">repository</a>. Or open this page in Chrome or Edge on a desktop.</p>
+    <p class="no-serial" id="no-serial" hidden>This browser can't flash over USB. On <b>Safari</b> or <b>Firefox</b>, use the setup helper instead:
+      get the <a href="https://github.com/aravindnayani/esp32-network-adblocker">repository</a> and run <code>python3 start-here.py</code>.
+      It sets the board up from any browser. Or open this page in Chrome or Edge on a desktop.</p>
     <script>if (!('serial' in navigator)) document.getElementById('no-serial').hidden = false;</script>
     <div class="flags">
       <span class="flag">Chrome / Edge: in the browser</span>
-      <span class="flag">Safari / Firefox: via esptool</span>
+      <span class="flag">Safari / Firefox: via start-here.py</span>
       <span class="flag">~30 seconds</span>
       <span class="flag">blocklist included</span>
     </div>

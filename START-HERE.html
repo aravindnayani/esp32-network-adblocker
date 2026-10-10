@@ -4,11 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>C3 AdBlock — Start Here</title>
-<meta name="description" content="Step-by-step setup for the ESP32 network ad-blocker: pick your board, flash it, set it up and turn it on.">
-<!-- Self-contained on purpose: this page is opened straight from a cloned repo (file://),
-     often offline, in Chrome, Edge, Safari or Firefox. No CDN, no fonts, no network calls.
-     Anything typed into the secrets form stays in this tab. Maintainer notes and the same
-     steps in Markdown: guide/getting-started.md (keep both in sync). -->
+<meta name="description" content="Set up the ESP32 network ad-blocker from your browser: install, flash, WiFi and admin password, then the dashboard.">
+<!-- Two modes. Opened straight from the repo (file://), it shows how to install Python and
+     start the helper, and checks whether the helper is running. Served by start-here.py
+     (http://127.0.0.1), it gets window.HELPER below and drives the whole setup through the
+     helper's API. Self-contained on purpose: no CDN, no fonts; works in Chrome, Edge, Safari
+     and Firefox. Same steps in Markdown for maintainers: guide/getting-started.md. -->
+<!--HELPER-->
 <style>
   :root {
     color-scheme: light dark;
@@ -31,18 +33,15 @@
   h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; }
   h1 .g { color: var(--accent); }
   h2 { font-size: 20px; margin: 0; line-height: 1.3; }
-  h3 { font-size: 16px; margin: 18px 0 4px; }
+  h3 { font-size: 16px; margin: 16px 0 4px; }
   .sub { color: var(--muted); margin: 0 0 24px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0; min-width: 0; }
   .muted, .note { color: var(--muted); }
   .note { font-size: 14px; }
   code { background: var(--code); padding: 1px 6px; border-radius: 5px; font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
-  ol, ul { padding-left: 22px; } li { margin: 4px 0; }
+  ol, ul { padding-left: 22px; } li { margin: 6px 0; }
 
-  /* choices */
-  fieldset { border: 0; margin: 0 0 14px; padding: 0; min-width: 0; }
-  legend { font-weight: 600; padding: 0; margin-bottom: 6px; }
-  .seg { display: flex; flex-wrap: wrap; gap: 8px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 4px; }
   .seg label { position: relative; display: block; cursor: pointer; }
   .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
   .seg span { display: block; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 15px; }
@@ -50,52 +49,53 @@
   .seg input:checked + span { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .seg input:focus-visible + span { outline: 2px solid var(--link); outline-offset: 2px; }
   .seg input:disabled + span { opacity: .45; cursor: not-allowed; }
-  .detect { font-size: 14px; color: var(--muted); margin: 4px 0 0; }
 
-  /* steps */
-  .progress { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
-  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-  .step { position: relative; }
   .step-head { display: flex; align-items: flex-start; gap: 12px; }
   .num { flex: none; width: 30px; height: 30px; border-radius: 50%; background: var(--panel2); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
   .step.done .num { background: var(--accent); color: var(--accent-ink); }
+  .step.locked { opacity: .55; }
+  .step.locked .step-body { display: none; }
   .step-head h2 { flex: 1; min-width: 0; padding-top: 2px; }
-  .donebox { flex: none; display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); cursor: pointer; padding-top: 4px; }
-  .donebox input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
   .step-body { margin-left: 42px; min-width: 0; }
-  .step.done .step-body { opacity: .75; }
   @media (max-width: 520px) { .step-body { margin-left: 0; } }
 
-  /* commands */
   .cmd { position: relative; margin: 8px 0 12px; min-width: 0; }
   .cmd pre { margin: 0; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 12px 74px 12px 12px; overflow-x: auto; font: 13.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
-  .cmd pre .c { color: var(--muted); }
   .copy { position: absolute; top: 8px; right: 8px; font: 600 12px system-ui, sans-serif; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
   .copy.ok { border-color: var(--accent); color: var(--accent); }
-  .btn { display: inline-block; font: 600 16px system-ui, sans-serif; padding: 11px 20px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); text-decoration: none; cursor: pointer; }
+  .btn { display: inline-block; font: 600 16px system-ui, sans-serif; padding: 10px 18px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink); text-decoration: none; cursor: pointer; }
+  .btn:disabled { opacity: .5; cursor: default; }
   .btn.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  .btn.small { font-size: 14px; padding: 6px 12px; }
   .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 10px 0; }
+
+  .checks { list-style: none; padding: 0; margin: 8px 0; }
+  .checks li { display: flex; gap: 10px; align-items: baseline; }
+  .checks .i { flex: none; width: 1.2em; text-align: center; }
+  .good { color: var(--accent); } .badc { color: var(--bad); }
 
   .callout { border-left: 3px solid var(--warn); background: var(--warn-bg); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 15px; }
   .callout.info { border-left-color: var(--link); background: var(--panel2); }
+  .callout.bad { border-left-color: var(--bad); }
 
-  /* form */
   .form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 16px; margin: 12px 0; }
   @media (max-width: 560px) { .form { grid-template-columns: minmax(0, 1fr); } }
   .form label { display: block; font-size: 14px; font-weight: 600; min-width: 0; }
   .form label small { font-weight: 400; color: var(--muted); }
-  .form input[type=text], .form input[type=password] { display: block; width: 100%; margin-top: 4px; padding: 9px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .form input.bad { border-color: var(--bad); }
+  .field, select.field { display: block; width: 100%; margin-top: 4px; padding: 9px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 15px system-ui, sans-serif; }
   .msg { display: block; font-size: 13px; font-weight: 400; min-height: 1em; }
   .msg.bad { color: var(--bad); } .msg.ok { color: var(--accent); }
-  .inline-input { display: inline-block; width: 16em; max-width: 100%; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
+  .progress { margin: 12px 0; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  .log { max-height: 220px; overflow: auto; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
   details { margin: 10px 0; }
   summary { cursor: pointer; font-weight: 600; }
-  table { border-collapse: collapse; width: 100%; font-size: 15px; }
-  td, th { text-align: left; padding: 7px 8px; border-top: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 13px; }
-  .table-wrap { overflow-x: auto; }
+  .big-link { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 15px; margin: 10px 0; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; min-width: 0; }
   [hidden] { display: none !important; }
   footer { margin-top: 40px; font-size: 14px; color: var(--muted); }
 </style>
@@ -103,659 +103,513 @@
 <body>
 <div class="wrap">
   <h1>🛡️ <span class="g">C3 AdBlock</span> — Start here</h1>
-  <p class="sub">Pick your setup below. The steps underneath change to match, from flashing the board to turning ad-blocking on for your whole network. Tick each step as you go — this page remembers where you are.</p>
 
-  <!-- ===================== choices ===================== -->
-  <div class="card" id="choices">
-    <fieldset>
-      <legend>1 · Which board do you have?</legend>
-      <div class="seg">
-        <label><input type="radio" name="board" value="c3"><span>ESP32-C3 · 4 MB<small>e.g. C3 SuperMini · ~$2 · recommended</small></span></label>
-        <label><input type="radio" name="board" value="s3"><span>ESP32-S3 · 8 MB+<small>e.g. S3 DevKitC-1 N8/N16 · room for ~1M domains</small></span></label>
-        <label><input type="radio" name="board" value="esp32"><span>Classic ESP32 · 4 MB<small>DevKit / WROOM · build from source only</small></span></label>
-      </div>
-    </fieldset>
-    <fieldset>
-      <legend>2 · How do you want to install it?</legend>
-      <div class="seg">
-        <label><input type="radio" name="method" value="prebuilt"><span>Prebuilt image<small>no toolchain · about 2 minutes</small></span></label>
-        <label><input type="radio" name="method" value="source"><span>Build from source<small>PlatformIO · lets you bake in settings</small></span></label>
-      </div>
-    </fieldset>
-    <fieldset>
-      <legend>3 · Your computer</legend>
-      <div class="seg">
-        <label><input type="radio" name="os" value="mac"><span>macOS</span></label>
-        <label><input type="radio" name="os" value="win"><span>Windows</span></label>
-        <label><input type="radio" name="os" value="linux"><span>Linux</span></label>
-      </div>
-    </fieldset>
-    <fieldset>
-      <legend>4 · Your browser</legend>
-      <div class="seg">
-        <label><input type="radio" name="browser" value="chrome"><span>Chrome</span></label>
-        <label><input type="radio" name="browser" value="edge"><span>Edge</span></label>
-        <label><input type="radio" name="browser" value="safari"><span>Safari</span></label>
-        <label><input type="radio" name="browser" value="firefox"><span>Firefox</span></label>
-      </div>
-      <p class="detect" id="detect"></p>
-    </fieldset>
-    <fieldset style="margin-bottom:0">
-      <legend>5 · Blocklist size</legend>
-      <div class="seg">
-        <label><input type="radio" name="list" value="default"><span>Default · ~100k domains<small>ads + trackers (StevenBlack + Hagezi Light)</small></span></label>
-        <label><input type="radio" name="list" value="everything"><span>Everything · ~500k<small>also blocks social &amp; messaging apps · S3 only</small></span></label>
-      </div>
-    </fieldset>
-  </div>
+  <!-- ===================== mode 1: opened from the repo ===================== -->
+  <div id="offline" hidden>
+    <p class="sub">Setup runs in this browser, with a small helper program on your computer doing the USB work: flashing the board and sending it your WiFi and admin password. Install the basics once, start the helper, and the rest happens on this page.</p>
 
-  <div class="row" style="justify-content:space-between;margin-top:22px">
-    <strong id="progress-label">0 of 0 steps done</strong>
-    <button class="btn secondary" type="button" id="reset" style="font-size:13px;padding:5px 12px">Start over</button>
-  </div>
-  <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
-
-  <!-- ===================== steps ===================== -->
-  <div id="steps">
-
-  <section class="card step" data-step="gather">
-    <div class="step-head"><span class="num"></span><h2>Get your hardware ready</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <ul>
-        <li>Your <b data-v="boardName"></b>.</li>
-        <li>A USB cable that carries <b>data</b>, not just power. If the board never shows up on your computer, try another cable first.</li>
-        <li data-if="board=s3">Your S3 board has two USB ports: plug into the one labelled <b>USB</b>, not <b>UART</b>. Otherwise the setup password won't show up later.</li>
-        <li data-if="board=c3|s3">No driver needed: the <span data-v="chipName"></span> talks USB by itself.</li>
-        <li data-if="board=esp32 os=mac|win">Your board probably uses a USB-serial chip that needs a driver: <a href="https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers">CP210x (Silicon Labs)</a> or <a href="https://www.wch-ic.com/downloads/category/30.html">CH340 (WCH)</a>. The chip name is printed next to the USB port.</li>
-        <li data-if="board=esp32 os=linux">Linux has the CP210x/CH340 drivers built in.</li>
-        <li data-if="method=source">This repository, cloned or downloaded — you're probably reading this page from it already.</li>
-      </ul>
-      <div class="callout info" data-if="board=esp32">The classic ESP32 has no prebuilt image, so this guide builds it from source. It's community-contributed and compile-tested; the C3 is the main tested board.</div>
-    </div>
-  </section>
-
-  <section class="card step" data-step="secrets" data-if="method=source">
-    <div class="step-head"><span class="num"></span><h2>Fill in your secrets <span class="muted" style="font-weight:400;font-size:15px">(optional)</span></h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <p>The build needs a <code>src/secrets.h</code> file. Every value in it is optional: leave the form empty and you'll set WiFi and the admin password on the device itself, which is the recommended way.</p>
-      <p class="note">🔒 Nothing you type here leaves this page — it isn't saved or sent anywhere. But whatever you put in <code>secrets.h</code> is compiled into the firmware, so don't share that build.</p>
-      <div class="form" id="secrets-form">
-        <label>Fallback WiFi name <small>— used only if none is saved on the device</small>
-          <input type="text" id="s-ssid" spellcheck="false" autocomplete="off" maxlength="64"><span class="msg" id="m-ssid"></span></label>
-        <label>Fallback WiFi password
-          <input type="password" id="s-wpass" spellcheck="false" autocomplete="off"><span class="msg" id="m-wpass"></span></label>
-        <label>Admin user name
-          <input type="text" id="s-user" spellcheck="false" autocomplete="off" placeholder="admin"><span class="msg" id="m-user"></span></label>
-        <label>Admin password <small>— 8+ characters</small>
-          <input type="password" id="s-apass" spellcheck="false" autocomplete="new-password"><span class="msg" id="m-apass"></span></label>
-        <label>OTA password <small>— blank = same as admin</small>
-          <input type="password" id="s-ota" spellcheck="false" autocomplete="off"><span class="msg" id="m-ota"></span></label>
-        <div style="display:flex;flex-direction:column;justify-content:center;gap:6px;min-width:0">
-          <label style="font-weight:400"><input type="checkbox" id="s-show"> Show passwords</label>
-          <button type="button" class="btn secondary" id="s-gen" style="font-size:14px;padding:7px 12px">Generate admin password</button>
+    <section class="card">
+      <div class="step-head"><span class="num">1</span><h2>Install the basics <span class="muted" style="font-weight:400;font-size:15px">(in a terminal, once)</span></h2></div>
+      <div class="step-body">
+        <div class="seg" role="radiogroup" aria-label="Your computer">
+          <label><input type="radio" name="os" value="mac"><span>macOS</span></label>
+          <label><input type="radio" name="os" value="win"><span>Windows</span></label>
+          <label><input type="radio" name="os" value="linux"><span>Linux</span></label>
         </div>
-      </div>
-      <div class="cmd"><pre id="secrets-out"></pre><button type="button" class="copy" data-copy="secrets-out">Copy</button></div>
-      <div class="row">
-        <button type="button" class="btn" id="s-download">Download secrets.h</button>
-        <span class="note">Save it as <code>src/secrets.h</code> inside the repo (it's gitignored).</span>
-      </div>
-    </div>
-  </section>
 
-  <section class="card step" data-step="flash">
-    <div class="step-head"><span class="num"></span><h2>Flash the board</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
+        <div data-os="mac">
+          <h3>1. Open Terminal</h3>
+          <p>Press <b>⌘ Space</b>, type <b>Terminal</b>, press <b>Return</b>.</p>
+          <h3>2. Check Python</h3>
+          <div class="cmd"><pre>python3 --version</pre><button type="button" class="copy">Copy</button></div>
+          <p class="note">You need 3.9 or newer. If macOS offers to install the <b>command line developer tools</b>, click <b>Install</b> and run the command again (this also installs <code>git</code>). Or install Python from <a href="https://www.python.org/downloads/">python.org</a>.</p>
+          <h3>3. Get the project and start the helper</h3>
+          <div class="cmd"><pre>git clone https://github.com/aravindnayani/esp32-network-adblocker.git
+cd esp32-network-adblocker
+python3 start-here.py</pre><button type="button" class="copy">Copy</button></div>
+          <p class="note">Already have the folder? Type <code>cd </code>, drag the folder onto the Terminal window, press Return, then run <code>python3 start-here.py</code>.</p>
+        </div>
 
-      <!-- prebuilt, browser can flash -->
-      <div data-if="method=prebuilt serial=yes">
-        <p>Your browser can flash the board directly, so this is one click:</p>
-        <ol>
-          <li>Plug the board into this computer.</li>
-          <li>Open the web installer and click <b>⚡ Connect &amp; Install</b>.</li>
-          <li>Pick the board's serial port (something like <code data-v="portExample"></code>) and confirm <b>Install</b>. Tick “erase device” if it asks.</li>
-          <li>Wait about 30 seconds. It detects the C3 or S3 by itself and writes the firmware plus the default blocklist.</li>
-          <li><b>Keep the installer tab open</b> — you need its console in the next step.</li>
-        </ol>
-        <div class="row"><a class="btn" href="https://aravindnayani.github.io/esp32-network-adblocker/" target="_blank" rel="noopener">Open the web installer ↗</a></div>
-      </div>
+        <div data-os="win">
+          <h3>1. Install Python</h3>
+          <p>Download it from <a href="https://www.python.org/downloads/">python.org</a>. On the first installer screen, tick <b>Add python.exe to PATH</b>.</p>
+          <h3>2. Get the project</h3>
+          <p>Download <a href="https://github.com/aravindnayani/esp32-network-adblocker/archive/refs/heads/main.zip">the project ZIP</a> and extract it (right-click → <b>Extract All</b>) into your Downloads folder.</p>
+          <h3>3. Open PowerShell and start the helper</h3>
+          <p>Press <b>Start</b>, type <b>PowerShell</b>, press <b>Enter</b>. Then:</p>
+          <div class="cmd"><pre>cd $HOME\Downloads\esp32-network-adblocker-main\esp32-network-adblocker-main
+py start-here.py</pre><button type="button" class="copy">Copy</button></div>
+          <p class="note">If <code>cd</code> says the folder doesn't exist, open the extracted folder in Explorer until you see <code>start-here.py</code>, click the address bar, copy the path, and use <code>cd "&lt;that path&gt;"</code>.</p>
+        </div>
 
-      <!-- prebuilt, no Web Serial -->
-      <div data-if="method=prebuilt serial=no">
-        <div class="callout"><b data-v="browserName"></b> can't talk to USB devices (no Web Serial), so you'll flash with <code>esptool</code>, Espressif's official command-line flasher. It's a few copy-and-paste commands<span data-if="os=win"> in <b>PowerShell</b></span><span data-if="os=mac"> in <b>Terminal</b></span><span data-if="os=linux"> in a terminal</span>. (Or open this page in Chrome or Edge for the one-click installer.)</div>
-        <h3>1. Install esptool</h3>
-        <p class="note" data-if="os=mac|linux">Needs Python 3.10 or newer (<code>python3 --version</code>).<span data-if="os=mac"> No Python yet? Get it from <a href="https://www.python.org/downloads/">python.org</a> or run <code>brew install python</code>.</span></p>
-        <p class="note" data-if="os=win">Needs Python 3.10 or newer. No Python yet? Install it from <a href="https://www.python.org/downloads/">python.org</a> (it includes the <code>py</code> launcher these commands use), then open a new PowerShell window.</p>
-        <div class="cmd"><pre data-cmd="esptoolInstall"></pre><button type="button" class="copy">Copy</button></div>
-        <h3>2. Download the image and check it</h3>
-        <div class="cmd"><pre data-cmd="download"></pre><button type="button" class="copy">Copy</button></div>
-        <p class="note">The last line must print <b data-if="os=mac|linux"><code>adblock-<span data-v="chip"></span>.bin: OK</code></b><b data-if="os=win"><code>OK</code></b>. If it doesn't, the download is damaged — don't flash it.</p>
-        <h3>3. Flash it</h3>
-        <p>Plug the board in, then:</p>
-        <div class="cmd"><pre data-cmd="flashCli"></pre><button type="button" class="copy">Copy</button></div>
-        <p class="note">esptool finds the board by itself. If you have several serial devices, type the board's port here and the commands update:
-          <input class="inline-input" id="port" type="text" spellcheck="false" autocomplete="off" aria-label="Serial port"> <span data-v="portHint"></span></p>
-        <p class="note">This writes the whole flash, so it also wipes any settings saved on the board. It takes about a minute.</p>
-        <details data-if="board=s3"><summary>“Failed to connect” on the S3?</summary>
-          <p>Hold <b>BOOT</b>, tap <b>RESET</b> (or <b>RST</b>), release BOOT, then run the command again.</p></details>
-      </div>
+        <div data-os="linux">
+          <h3>1. Install Python and git</h3>
+          <div class="cmd"><pre>sudo apt install python3 python3-venv git     # Fedora: sudo dnf install python3 git</pre><button type="button" class="copy">Copy</button></div>
+          <h3>2. Allow access to USB serial ports</h3>
+          <div class="cmd"><pre>sudo usermod -aG dialout $USER</pre><button type="button" class="copy">Copy</button></div>
+          <p class="note">Then log out and back in (once). On Arch the group is <code>uucp</code>.</p>
+          <h3>3. Get the project and start the helper</h3>
+          <div class="cmd"><pre>git clone https://github.com/aravindnayani/esp32-network-adblocker.git
+cd esp32-network-adblocker
+python3 start-here.py</pre><button type="button" class="copy">Copy</button></div>
+        </div>
 
-      <!-- build from source -->
-      <div data-if="method=source">
-        <h3>1. Install PlatformIO</h3>
-        <p class="note">Run these from the repository folder (the one with <code>platformio.ini</code>). Use a recent PlatformIO: the distro/apt package is too old.<span data-if="os=win"> Commands are for PowerShell. If it refuses to run <code>Activate.ps1</code>, run <code>Set-ExecutionPolicy -Scope Process Bypass</code> first (it only affects that window).</span> Open a new terminal later? Run the second line again.</p>
-        <div class="cmd"><pre data-cmd="pioInstall"></pre><button type="button" class="copy">Copy</button></div>
-        <h3>2. Put your secrets in place</h3>
-        <div class="cmd"><pre data-cmd="secretsPlace"></pre><button type="button" class="copy">Copy</button></div>
-        <h3>3. Build the blocklist</h3>
-        <div class="cmd"><pre data-cmd="blocklist"></pre><button type="button" class="copy">Copy</button></div>
-        <details data-if="os=mac"><summary>“CERTIFICATE_VERIFY_FAILED” while downloading?</summary>
-          <p>Python from python.org on macOS ships without root certificates. Double-click <b>Install Certificates.command</b> in <code>/Applications/Python 3.x/</code>, then try again.</p></details>
-        <h3>4. Build and flash</h3>
-        <p>Plug the board in, then:</p>
-        <div class="cmd"><pre data-cmd="pioFlash"></pre><button type="button" class="copy">Copy</button></div>
-        <p class="note">The first build downloads the toolchain and takes a few minutes. After this first USB flash, firmware and blocklists update over WiFi.</p>
-        <details data-if="os=linux"><summary>Board keeps resetting, or “port is busy”?</summary>
-          <p>ModemManager is grabbing the port. See <a href="guide/building.md#troubleshooting">Troubleshooting</a> for the two-line fix.</p></details>
+        <div class="callout info"><b>What gets installed.</b> You install Python (and git, if you clone). The first time <code>start-here.py</code> runs, it creates a <code>.setup-venv</code> folder inside the project with <b>esptool</b> (Espressif's flasher) and <b>certifi</b> (web certificates). Nothing else on your computer changes; delete the project folder to remove it all.</div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="card step" data-step="console">
-    <div class="step-head"><span class="num"></span><h2>Get the setup password</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <p>On every boot the device prints the password for its own setup WiFi, plus its certificate fingerprint, on the USB console. Look for these lines and <b>write both down</b>:</p>
-      <div class="cmd"><pre>[setup] setup WiFi (if it's ever needed): "C3-AdBlock-1A2B", password abcd-efgh-jkmn
-[https] certificate SHA-256 fingerprint: 3F:9A:…:C2</pre></div>
+    <section class="card" id="verify">
+      <div class="step-head"><span class="num">2</span><h2>Check it from here</h2></div>
+      <div class="step-body">
+        <p>When the terminal says <b>setup is running</b>, your browser opens the setup page by itself. If it doesn't, check here:</p>
+        <ul class="checks">
+          <li><span class="i" id="v-icon">…</span><span id="v-text">Looking for the helper on this computer…</span></li>
+        </ul>
+        <div class="row">
+          <button type="button" class="btn secondary small" id="v-check">Check again</button>
+          <a class="btn" id="v-go" hidden>Continue setup →</a>
+        </div>
+        <p class="note" id="v-direct" hidden>Started it already? Some browsers (Safari in particular) won't let a page opened from a file check for it. Open <a href="http://127.0.0.1:8765/">http://127.0.0.1:8765/</a> directly, or the address the terminal shows.</p>
+      </div>
+    </section>
 
-      <div data-if="method=prebuilt serial=yes">
-        <ol>
-          <li>In the web installer, click <b>Logs &amp; Console</b>.</li>
-          <li>If nothing appears, click <b>Reset device</b> in the console (or unplug and replug the board and connect again).</li>
-        </ol>
-      </div>
-      <div data-if="method=prebuilt serial=no">
-        <p>Open the console with the serial monitor that came with esptool:</p>
-        <div class="cmd"><pre data-cmd="monitorCli"></pre><button type="button" class="copy">Copy</button></div>
-        <p class="note">If it lists ports, pick the board's number. Then press the board's <b>RESET</b> button (or unplug and replug it and run the command again) to see the boot lines. The password is also repeated every 15 seconds while setup is waiting. Quit with <b>Ctrl+]</b>.</p>
-      </div>
-      <div data-if="method=source">
-        <div class="cmd"><pre data-cmd="monitorPio"></pre><button type="button" class="copy">Copy</button></div>
-        <p class="note">Press the board's <b>RESET</b> button to see the boot lines (the password is also repeated every 15 seconds while setup is waiting). Quit with <b>Ctrl+C</b>.</p>
-      </div>
-      <p class="note">The <span data-v="chipName"></span>'s USB console can miss the first lines after a reset. If you don't see them, just wait for the 15-second repeat or reconnect the monitor.</p>
-      <div class="callout info" data-if="fallback=yes">You set a fallback WiFi in <code>secrets.h</code>. If the device joins it, there's no setup WiFi — instead you'll see <code>WiFi up: 192.168.x.x</code>. Note that IP address and the fingerprint, then skip the next step.</div>
-    </div>
-  </section>
-
-  <section class="card step" data-step="portal">
-    <div class="step-head"><span class="num"></span><h2>Connect it to your WiFi and choose an admin password</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
+    <details class="card" style="margin-top:8px">
+      <summary>Can't install Python? (Chrome or Edge only)</summary>
       <ol>
-        <li>On your phone (or laptop), join the WiFi network <code>C3-AdBlock-XXXX</code> using the setup password from the last step.</li>
-        <li>A setup page opens by itself. If it doesn't, browse to <code>http://192.168.4.1</code>.</li>
-        <li>Pick your home WiFi and type its password.</li>
-        <li>Choose a <b>dashboard admin password</b> — 8 or more characters. The user name is <code data-v="adminUser"></code>. It protects settings, blocklist uploads and firmware updates.</li>
-        <li>Check the certificate fingerprint at the bottom of the page matches the one you wrote down, then tap <b>Connect</b>.</li>
-        <li>The device restarts and joins your WiFi. Switch your phone back to your normal WiFi.</li>
+        <li>Open the <a href="https://aravindnayani.github.io/esp32-network-adblocker/">web installer</a> in Chrome or Edge, plug in the board and click <b>⚡ Connect &amp; Install</b>.</li>
+        <li>Open <b>Logs &amp; Console</b> and note the setup WiFi password it prints.</li>
+        <li>From your phone, join the <code>C3-AdBlock-XXXX</code> WiFi with that password. In the page that opens, pick your WiFi, enter its password and choose an admin password.</li>
+        <li>Then open <a href="https://c3adblock.local">https://c3adblock.local</a> and follow <b>Finish setting up</b> there.</li>
       </ol>
-      <p class="note">The device only works on 2.4 GHz WiFi. If your router has separate 2.4 and 5 GHz names, pick the 2.4 GHz one.</p>
-      <div class="callout info" data-if="fallback=yes" id="fallback-admin-note"></div>
-    </div>
-  </section>
-
-  <section class="card step" data-step="dashboard">
-    <div class="step-head"><span class="num"></span><h2>Open the dashboard</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <p>On a computer or phone on your home WiFi, open <a href="https://c3adblock.local" target="_blank" rel="noopener"><b>https://c3adblock.local</b></a> and sign in as <code data-v="adminUser"></code>.</p>
-      <p class="note">Doesn't load? Some Android phones and older Windows versions can't resolve <code>.local</code> names. Use the device's IP instead — it's in your router's list of connected devices, and in the console as <code>WiFi up: …</code>.</p>
-      <p>Your browser will warn that the connection isn't private. That's expected: the device made its own certificate, so no public authority vouches for it. Check its fingerprint matches the one you wrote down, then accept it:</p>
-
-      <ol data-if="browser=chrome">
-        <li>On “Your connection is not private”, click the <b>Not secure</b> badge in the address bar → <b>Certificate details</b>. Compare the <b>SHA-256 fingerprint</b> under “Certificate”.</li>
-        <li>If it matches, close that window and click <b>Advanced</b> → <b>Proceed to c3adblock.local (unsafe)</b>.</li>
-      </ol>
-      <ol data-if="browser=edge">
-        <li>On “Your connection isn't private”, click the <b>Not secure</b> badge in the address bar → <b>Your connection to this site isn't secure</b> → the certificate icon. Compare the <b>SHA-256</b> fingerprint.</li>
-        <li>If it matches, click <b>Advanced</b> → <b>Continue to c3adblock.local (unsafe)</b>.</li>
-      </ol>
-      <ol data-if="browser=firefox">
-        <li>On “Warning: Potential Security Risk Ahead”, click <b>Advanced…</b> → <b>View Certificate</b>. Compare <b>SHA-256</b> under “Fingerprints”.</li>
-        <li>If it matches, go back to the warning tab and click <b>Accept the Risk and Continue</b>.</li>
-      </ol>
-      <ol data-if="browser=safari">
-        <li>On “This Connection Is Not Private”, click <b>Show Details</b> → <b>view the certificate</b>. Open <b>Details</b> and compare <b>SHA-256</b> under “Fingerprints”.</li>
-        <li>If it matches, click <b>visit this website</b> → <b>Visit Website</b>. macOS may ask for your login password to trust the certificate.</li>
-      </ol>
-      <p class="note">If the fingerprint doesn't match, stop: something else is answering for that name. Fingerprints change only if the device is reflashed with a full erase.</p>
-    </div>
-  </section>
-
-  <section class="card step" data-step="dns">
-    <div class="step-head"><span class="num"></span><h2>Turn it on for your network</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <ol>
-        <li><b>Try one device first</b> (optional): set that device's DNS server to the ad-blocker's IP.</li>
-        <li><b>Then the whole network:</b> in your router's settings, set the DNS server (usually under DHCP or LAN) to the ad-blocker's IP. Devices pick it up when they reconnect.</li>
-        <li>Give the ad-blocker a fixed IP in the router (a “DHCP reservation”) so it doesn't move.</li>
-      </ol>
-      <p>Check it's blocking — type the device's IP here and run the command:
-        <input class="inline-input" id="ip" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" placeholder="192.168.1.50" aria-label="Ad-blocker IP address"></p>
-      <div class="cmd"><pre data-cmd="verify"></pre><button type="button" class="copy">Copy</button></div>
-      <p class="note">An ad domain should come back as <code>0.0.0.0</code>, and a normal site with its real address. The dashboard's counters start moving too.</p>
-    </div>
-  </section>
-
-  <section class="card step" data-step="biglist" data-if="list=everything">
-    <div class="step-head"><span class="num"></span><h2>Load the “everything” list</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <p data-if="method=source">You built it into the image in the flash step, so there's nothing more to do. Check the dashboard shows roughly 500k domains.</p>
-      <div data-if="method=prebuilt">
-        <p>The prebuilt image ships the default list. Build the bigger one from the repository folder (needs Python 3):</p>
-        <div class="cmd"><pre data-cmd="biglist"></pre><button type="button" class="copy">Copy</button></div>
-        <p class="note" data-if="os=mac">“CERTIFICATE_VERIFY_FAILED”? Python from python.org needs its certificates installed once: double-click <b>Install Certificates.command</b> in <code>/Applications/Python 3.x/</code>.</p>
-        <p>Then on the dashboard: <b>Blocklist → Upload</b> the new <code>blocklist.bin</code>, and press the board's <b>BOOT</b> button when its LED blinks.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="card step" data-step="daily">
-    <div class="step-head"><span class="num"></span><h2>Keep it running</h2>
-      <label class="donebox"><input type="checkbox"> Done</label></div>
-    <div class="step-body">
-      <p>Everything below happens on the dashboard. Risky actions need a press of the physical <b>BOOT</b> button: its LED blinks while a request waits for you<span data-v="ledNote"></span>.</p>
-      <div class="table-wrap"><table>
-        <tr><th>You want to…</th><th>Do this</th></tr>
-        <tr><td>Keep the blocklist fresh</td><td>Set an <b>auto-update URL</b> to the weekly build:<br><code>https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/blocklist.bin</code><span data-if="list=everything"><br><span class="note">That's the default list — it would replace your “everything” list.</span></span></td></tr>
-        <tr><td>Turn blocking off for a bit</td><td><b>Pause</b>. Up to 15 min per hour needs only the password; longer needs a BOOT press.</td></tr>
-        <tr><td>Block one more site</td><td>Add it under <b>Custom domains</b>.</td></tr>
-        <tr><td>Cut off a device</td><td><b>Ban</b> it. The ban follows its MAC address.</td></tr>
-        <tr><td>Update the firmware</td><td><b>Firmware → OTA update</b>, then press BOOT when the LED blinks.</td></tr>
-        <tr><td>Move to a new WiFi</td><td><b>Forget WiFi</b>. Your admin password is kept.</td></tr>
-        <tr><td>Recover a lost password</td><td>Hold <b>BOOT</b> while plugging it in. This clears WiFi and the admin password and reopens setup (the setup password stays the same).</td></tr>
-      </table></div>
-      <p class="note">Power: a router's USB port works well. Cheap adapters can cause dropouts.<span data-if="board=c3"> A printable case is in <a href="hardware/esp32-c3-supermini-enclosure.stl">hardware/</a> — keep the antenna end clear.</span></p>
-    </div>
-  </section>
-
+    </details>
   </div>
 
-  <div class="card" id="all-done" hidden>
-    <h2>🎉 You're set</h2>
-    <p style="margin-bottom:0">Ads and trackers are now blocked for every device that uses the ad-blocker for DNS.</p>
+  <!-- ===================== mode 2: served by start-here.py ===================== -->
+  <div id="app" hidden>
+    <p class="sub">Keep the terminal running while you go through these steps. Passwords you type here go straight to the board over USB; they aren't saved anywhere.</p>
+
+    <section class="card step" id="st-check">
+      <div class="step-head"><span class="num">1</span><h2>Check your computer and plug in the board</h2></div>
+      <div class="step-body">
+        <ul class="checks">
+          <li><span class="i good">✓</span><span>Python <b id="c-py"></b></span></li>
+          <li><span class="i good">✓</span><span>esptool <b id="c-esp"></b> <span class="muted">(in .setup-venv)</span></span></li>
+          <li><span class="i" id="c-port-i">…</span><span id="c-port-t">Looking for the board…</span></li>
+        </ul>
+        <div id="c-ports" hidden>
+          <label class="note" for="c-port">Board's USB port</label>
+          <select class="field" id="c-port" style="max-width:32em"></select>
+        </div>
+        <div class="callout" id="c-noport" hidden>Plug the board into this computer with a USB cable that carries <b>data</b> (some cables only charge). On an ESP32-S3 with two ports, use the one labelled <b>USB</b>. This list updates by itself.</div>
+        <div class="callout bad" id="c-linux" hidden></div>
+      </div>
+    </section>
+
+    <section class="card step locked" id="st-board">
+      <div class="step-head"><span class="num">2</span><h2>Your board</h2></div>
+      <div class="step-body">
+        <div class="row">
+          <button type="button" class="btn" id="b-detect">Detect board</button>
+          <span id="b-result"></span>
+        </div>
+        <div class="seg" role="radiogroup" aria-label="Board">
+          <label><input type="radio" name="chip" value="c3"><span>ESP32-C3<small>4 MB · recommended</small></span></label>
+          <label><input type="radio" name="chip" value="s3"><span>ESP32-S3<small>8 MB+ · room for ~1M domains</small></span></label>
+          <label><input type="radio" name="chip" value="esp32"><span>Classic ESP32<small>build from source only</small></span></label>
+        </div>
+        <h3>How to install it</h3>
+        <div class="seg" role="radiogroup" aria-label="Install method">
+          <label><input type="radio" name="method" value="prebuilt" checked><span>Prebuilt image<small>about 2 minutes · recommended</small></span></label>
+          <label><input type="radio" name="method" value="source"><span>Build from source<small>installs PlatformIO · 5–15 minutes the first time</small></span></label>
+        </div>
+        <p class="note">Already set up this board before? <button type="button" class="btn secondary small" id="b-info">Ask the board for its status</button></p>
+        <div class="callout info" id="b-online" hidden></div>
+        <div class="progress" id="b-prog" hidden></div>
+      </div>
+    </section>
+
+    <section class="card step locked" id="st-install">
+      <div class="step-head"><span class="num">3</span><h2>Install the ad-blocker on the board</h2></div>
+      <div class="step-body">
+        <p>This erases the board and writes the ad-blocker and its blocklist. <span id="i-what"></span></p>
+        <div class="row"><button type="button" class="btn" id="i-go">Install</button></div>
+        <div class="progress" id="i-prog" hidden></div>
+      </div>
+    </section>
+
+    <section class="card step locked" id="st-wifi">
+      <div class="step-head"><span class="num">4</span><h2>Your WiFi and admin password</h2></div>
+      <div class="step-body">
+        <p>The board joins your home WiFi with these. The admin password protects its dashboard (user name <code>admin</code>).</p>
+        <div class="form">
+          <label>WiFi name
+            <input class="field" id="w-ssid" list="w-nets" autocomplete="off" spellcheck="false" maxlength="32">
+            <datalist id="w-nets"></datalist>
+            <span class="msg" id="w-nets-msg"><a href="#" id="w-refresh">Show networks the board can see</a></span></label>
+          <label>WiFi password
+            <input class="field" id="w-pass" type="password" autocomplete="off" spellcheck="false">
+            <span class="msg" id="m-pass">Leave empty for an open network.</span></label>
+          <label>New admin password <small>— 8+ characters</small>
+            <input class="field" id="w-admin" type="password" autocomplete="new-password" spellcheck="false">
+            <span class="msg" id="m-admin"></span></label>
+          <label>Admin password again
+            <input class="field" id="w-admin2" type="password" autocomplete="new-password" spellcheck="false">
+            <span class="msg" id="m-admin2"></span></label>
+          <label id="w-cur-l" hidden>Current admin password <small>— this board already has one</small>
+            <input class="field" id="w-cur" type="password" autocomplete="current-password" spellcheck="false">
+            <span class="msg">Forgot it? Unplug the board, hold <b>BOOT</b> while plugging it back in, then press <b>Ask the board for its status</b> in step 2.</span></label>
+        </div>
+        <div class="row">
+          <label class="note"><input type="checkbox" id="w-show"> Show passwords</label>
+          <button type="button" class="btn secondary small" id="w-gen">Suggest an admin password</button>
+        </div>
+        <p class="note">The board only uses <b>2.4 GHz</b> WiFi. If your router has separate 2.4 and 5 GHz names, pick the 2.4 GHz one. Save the admin password in your password manager.</p>
+        <div class="row"><button type="button" class="btn" id="w-go">Connect</button></div>
+        <div class="progress" id="w-prog" hidden></div>
+      </div>
+    </section>
+
+    <section class="card step locked" id="st-dash">
+      <div class="step-head"><span class="num">5</span><h2>Open the dashboard and finish setting up</h2></div>
+      <div class="step-body">
+        <dl class="kv">
+          <dt>Address</dt><dd><a class="big-link" href="https://c3adblock.local" target="_blank" rel="noopener">https://c3adblock.local</a></dd>
+          <dt>Or by IP</dt><dd><a id="d-ip" target="_blank" rel="noopener"></a></dd>
+          <dt>Fingerprint</dt><dd><code id="d-fp"></code></dd>
+        </dl>
+        <p>Your browser will warn that the connection isn't private. That's expected: the board made its own certificate. Check it shows the fingerprint above, then accept it:</p>
+        <div class="seg" role="radiogroup" aria-label="Your browser">
+          <label><input type="radio" name="browser" value="chrome"><span>Chrome</span></label>
+          <label><input type="radio" name="browser" value="edge"><span>Edge</span></label>
+          <label><input type="radio" name="browser" value="safari"><span>Safari</span></label>
+          <label><input type="radio" name="browser" value="firefox"><span>Firefox</span></label>
+        </div>
+        <ol data-browser="chrome">
+          <li>On “Your connection is not private”, click the <b>Not secure</b> badge in the address bar → <b>Certificate details</b>, and compare the <b>SHA-256 fingerprint</b>.</li>
+          <li>If it matches, close that window and click <b>Advanced</b> → <b>Proceed to c3adblock.local (unsafe)</b>.</li>
+        </ol>
+        <ol data-browser="edge">
+          <li>On “Your connection isn't private”, click <b>Not secure</b> in the address bar → <b>Your connection to this site isn't secure</b> → the certificate icon, and compare the <b>SHA-256</b> fingerprint.</li>
+          <li>If it matches, click <b>Advanced</b> → <b>Continue to c3adblock.local (unsafe)</b>.</li>
+        </ol>
+        <ol data-browser="firefox">
+          <li>On “Warning: Potential Security Risk Ahead”, click <b>Advanced…</b> → <b>View Certificate</b>, and compare <b>SHA-256</b> under “Fingerprints”.</li>
+          <li>If it matches, go back and click <b>Accept the Risk and Continue</b>.</li>
+        </ol>
+        <ol data-browser="safari">
+          <li>On “This Connection Is Not Private”, click <b>Show Details</b> → <b>view the certificate</b> → <b>Details</b>, and compare <b>SHA-256</b> under “Fingerprints”.</li>
+          <li>If it matches, click <b>visit this website</b> → <b>Visit Website</b>. macOS may ask for your login password.</li>
+        </ol>
+        <p>Log in as <code>admin</code>. The dashboard's <b>Finish setting up</b> card walks you through the rest:</p>
+        <ul>
+          <li><b>What to block</b> — ads and trackers are always on; tick <b>social media</b>, <b>gambling</b>, <b>adult content</b> or <b>fake news</b> too.</li>
+          <li><b>Exceptions</b> — apps that must keep working anyway, like WhatsApp or YouTube.</li>
+          <li><b>Your router's DNS</b> — so every device on the network uses the ad-blocker.</li>
+        </ul>
+        <p class="note">Page doesn't open? Some Android phones and older Windows versions can't look up <code>.local</code> names: use the IP link instead.</p>
+      </div>
+    </section>
+
+    <section class="card step locked" id="st-use">
+      <div class="step-head"><span class="num">6</span><h2>Using it and keeping it up to date</h2></div>
+      <div class="step-body">
+        <ul>
+          <li><b>Daily use:</b> open <a href="https://c3adblock.local" target="_blank" rel="noopener">https://c3adblock.local</a> to see what's blocked per device, pause blocking for a few minutes, block extra sites, add exceptions or cut a device off.</li>
+          <li><b>Blocklist updates:</b> automatic. After you choose what to block, the board downloads a fresh list every day.</li>
+          <li><b>Firmware updates:</b> on the dashboard under <b>Firmware — OTA update</b>, choose the new <code>firmware.bin</code> and press the board's <b>BOOT</b> button when its LED blinks. Settings and exceptions are kept.</li>
+          <li><b>New router or WiFi password:</b> on the dashboard, <b>Forget WiFi</b>, then plug the board into this computer and run <code>start-here.py</code> again.</li>
+          <li><b>Lost the admin password:</b> hold <b>BOOT</b> while plugging the board in, then run <code>start-here.py</code> again.</li>
+        </ul>
+        <p class="note">You're done with the helper: press <b>Ctrl+C</b> in the terminal and unplug the board. Plug it into your router's USB port or any USB charger near the router.</p>
+      </div>
+    </section>
+
+    <details class="card" id="con-box">
+      <summary>Board console</summary>
+      <p class="note">What the board prints over USB. Useful if something goes wrong.</p>
+      <pre class="log" id="console">(nothing yet)</pre>
+    </details>
   </div>
 
   <footer>
-    More detail: <a href="README.md">README</a> ·
-    <a href="guide/how-it-works.md">How it works</a> ·
-    <a href="guide/security.md">Security</a> ·
-    <a href="guide/building.md">Building &amp; troubleshooting</a> ·
-    <a href="https://github.com/aravindnayani/esp32-network-adblocker">GitHub</a>
+    More detail: <a href="https://github.com/aravindnayani/esp32-network-adblocker#readme">README</a> ·
+    <a href="https://github.com/aravindnayani/esp32-network-adblocker/blob/main/guide/how-it-works.md">How it works</a> ·
+    <a href="https://github.com/aravindnayani/esp32-network-adblocker/blob/main/guide/security.md">Security</a> ·
+    <a href="https://github.com/aravindnayani/esp32-network-adblocker/blob/main/guide/building.md">Building &amp; troubleshooting</a>
   </footer>
 </div>
 
 <script>
 (function () {
   'use strict';
-
-  var SITE = 'https://aravindnayani.github.io/esp32-network-adblocker/';
-  var EVERYTHING = [
-    'https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn-social/hosts',
-    'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/ultimate-onlydomains.txt'
-  ];
-  var KEYS = ['board', 'method', 'os', 'browser', 'list'];
-  var STORE = 'c3adblock-start';
-
-  // ---------- storage (best effort: file:// and private windows may refuse) ----------
-  function load() { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (e) { return {}; } }
-  function save(o) { try { localStorage.setItem(STORE, JSON.stringify(o)); } catch (e) {} }
-  var saved = load();
-
-  // ---------- detection ----------
+  function $(id) { return document.getElementById(id); }
+  function show(el, on) { el.hidden = !on; }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   var ua = navigator.userAgent || '';
   var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
-  function detectOs() {
-    if (/win/i.test(plat) || /Windows/.test(ua)) return 'win';
-    if (/mac|iphone|ipad/i.test(plat) || /Mac OS X/.test(ua)) return 'mac';
-    return 'linux';
-  }
-  function detectBrowser() {
-    if (/Edg\//.test(ua)) return 'edge';
-    if (/Firefox\//.test(ua)) return 'firefox';
-    if (/Chrome\/|Chromium\//.test(ua)) return 'chrome';
-    if (/Safari\//.test(ua)) return 'safari';
-    return 'chrome';
-  }
-  var hasSerial = 'serial' in navigator;
-  var detected = { os: detectOs(), browser: detectBrowser() };
+  var OS = /win/i.test(plat) || /Windows/.test(ua) ? 'win' : (/mac|iphone|ipad/i.test(plat) || /Mac OS X/.test(ua)) ? 'mac' : 'linux';
+  var BROWSER = /Edg\//.test(ua) ? 'edge' : /Firefox\//.test(ua) ? 'firefox' : /Chrome\/|Chromium\//.test(ua) ? 'chrome' : /Safari\//.test(ua) ? 'safari' : 'chrome';
 
-  // ---------- state ----------
-  var state = { board: 'c3', method: 'prebuilt', os: detected.os, browser: detected.browser, list: 'default' };
-  KEYS.forEach(function (k) { if (saved.choices && saved.choices[k]) state[k] = saved.choices[k]; });
-  // The hash wins, so a shared or bookmarked link reproduces the same steps.
-  location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
-    var p = kv.split('='); if (KEYS.indexOf(p[0]) >= 0 && p[1]) state[p[0]] = decodeURIComponent(p[1]);
-  });
-  var done = saved.done || {};
-
-  // Web Serial: desktop Chrome and Edge always have it on the (https) installer page, even
-  // where this file:// page or an embedded view doesn't expose it. Any other browser counts
-  // only if it really has it, so a Firefox that ships Web Serial gets the one-click route.
-  var mobile = /Android|iPhone|iPad|Mobile/.test(ua);
-  function serialFor(b) {
-    if (b === 'chrome' || b === 'edge') return !(mobile && b === detected.browser);
-    return b === detected.browser && hasSerial;
-  }
-
-  function normalize() {
-    if (state.board === 'esp32') state.method = 'source';
-    if (state.board !== 's3') state.list = 'default';
-  }
-
-  // ---------- derived values ----------
-  var fallbackWifi = false;
-  function v() {
-    var chip = state.board === 'esp32' ? 'esp32' : state.board;
-    var port = (document.getElementById('port').value || '').trim();
-    var adminUser = (document.getElementById('s-user').value || '').trim() || 'admin';
-    return {
-      chip: chip,
-      esptoolChip: { c3: 'esp32c3', s3: 'esp32s3', esp32: 'esp32' }[chip],
-      env: { c3: 'c3', s3: 's3', esp32: 'esp32dev' }[chip],
-      chipName: { c3: 'ESP32-C3', s3: 'ESP32-S3', esp32: 'ESP32' }[chip],
-      boardName: { c3: 'ESP32-C3 board with 4 MB flash', s3: 'ESP32-S3 board with 8 MB or more flash', esp32: 'classic ESP32 board with 4 MB flash' }[chip],
-      browserName: { chrome: 'Chrome', edge: 'Edge', safari: 'Safari', firefox: 'Firefox' }[state.browser],
-      portExample: { mac: state.board === 'esp32' ? '/dev/cu.usbserial-…' : '/dev/cu.usbmodem…', win: 'COM3', linux: state.board === 'esp32' ? '/dev/ttyUSB0' : '/dev/ttyACM0' }[state.os],
-      portHint: { mac: 'Find it with ls /dev/cu.usb*', win: 'Find it in Device Manager → Ports (COM & LPT)', linux: 'Find it with ls /dev/ttyACM* /dev/ttyUSB*' }[state.os],
-      port: port,
-      adminUser: adminUser,
-      ledNote: { c3: ' (the blue LED on a C3 SuperMini)', s3: ' (the RGB LED on an S3 DevKitC-1)', esp32: '' }[chip]
-    };
-  }
-
-  // ---------- commands ----------
-  function q(s) { return /^[A-Za-z0-9_\/.:\-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'"; }
-  function qw(s) { return /^[A-Za-z0-9_\\\/.:\-]+$/.test(s) ? s : "'" + s.replace(/'/g, "''") + "'"; }
-  var CMDS = {
-    esptoolInstall: function (x) {
-      if (state.os === 'win') return [
-        'mkdir $HOME\\c3-adblock -Force; cd $HOME\\c3-adblock',
-        'py -m venv venv',
-        '.\\venv\\Scripts\\python -m pip install "esptool>=5"'
-      ].join('\n');
-      return [
-        'mkdir -p ~/c3-adblock && cd ~/c3-adblock',
-        'python3 -m venv venv',
-        './venv/bin/python -m pip install "esptool>=5"'
-      ].join('\n');
-    },
-    download: function (x) {
-      var f = 'adblock-' + x.chip + '.bin';
-      if (state.os === 'win') return [
-        'Invoke-WebRequest ' + SITE + f + ' -OutFile ' + f,
-        'Invoke-WebRequest ' + SITE + 'SHA256SUMS -OutFile SHA256SUMS',
-        '$want = ((Select-String " ' + f + '" SHA256SUMS).Line -split " ")[0]',
-        'if ((Get-FileHash ' + f + ').Hash -eq $want) { "OK" } else { "MISMATCH - do not flash" }'
-      ].join('\n');
-      var sum = state.os === 'mac' ? 'shasum -a 256 -c' : 'sha256sum -c';
-      return [
-        'curl -fLO ' + SITE + f,
-        'curl -fLO ' + SITE + 'SHA256SUMS',
-        "grep ' " + f + "$' SHA256SUMS | " + sum
-      ].join('\n');
-    },
-    flashCli: function (x) {
-      var f = 'adblock-' + x.chip + '.bin';
-      var py = state.os === 'win' ? '.\\venv\\Scripts\\python' : './venv/bin/python';
-      var port = x.port ? ' --port ' + (state.os === 'win' ? qw(x.port) : q(x.port)) : '';
-      return py + ' -m esptool --chip ' + x.esptoolChip + port + ' write-flash 0x0 ' + f;
-    },
-    monitorCli: function (x) {
-      var py = state.os === 'win' ? '.\\venv\\Scripts\\python' : './venv/bin/python';
-      var port = x.port ? (state.os === 'win' ? qw(x.port) : q(x.port)) : '-';
-      return py + ' -m serial.tools.miniterm ' + port + ' 115200';
-    },
-    pioInstall: function () {
-      if (state.os === 'win') return [
-        'py -m venv .venv',
-        '.\\.venv\\Scripts\\Activate.ps1',
-        'python -m pip install -U platformio'
-      ].join('\n');
-      return [
-        'python3 -m venv .venv',
-        'source .venv/bin/activate',
-        'python -m pip install -U platformio'
-      ].join('\n');
-    },
-    secretsPlace: function () {
-      var win = state.os === 'win';
-      var dl = win ? '$HOME\\Downloads\\secrets.h' : '~/Downloads/secrets.h';
-      return [
-        '<span class="c"># If you downloaded secrets.h in the previous step:</span>',
-        (win ? 'Move-Item ' + dl + ' src\\secrets.h' : 'mv ' + dl + ' src/secrets.h'),
-        '<span class="c"># …or, if you skipped it (set everything on the device instead):</span>',
-        (win ? 'Copy-Item src\\secrets.example.h src\\secrets.h' : 'cp src/secrets.example.h src/secrets.h')
-      ].join('\n');
-    },
-    blocklist: function () {
-      var py = 'python';
-      var cmd = py + ' tools/build_blocklist.py data/blocklist.bin';
-      if (state.list === 'everything') {
-        var sep = state.os === 'win' ? ' `\n  ' : ' \\\n  ';
-        cmd += sep + EVERYTHING.join(sep);
-      }
-      return cmd;
-    },
-    pioFlash: function (x) {
-      return [
-        'pio run -e ' + x.env + ' -t upload      <span class="c"># firmware</span>',
-        'pio run -e ' + x.env + ' -t uploadfs    <span class="c"># blocklist</span>'
-      ].join('\n');
-    },
-    monitorPio: function (x) { return 'pio device monitor -e ' + x.env; },
-    biglist: function () {
-      var win = state.os === 'win';
-      var sep = win ? ' `\n  ' : ' \\\n  ';
-      return (win ? 'py' : 'python3') + ' tools/build_blocklist.py blocklist.bin' + sep + EVERYTHING.join(sep);
-    },
-    verify: function () {
-      var ip = (document.getElementById('ip').value || '').trim();
-      if (!/^[0-9.]{7,15}$/.test(ip)) ip = '<ad-blocker-ip>';
-      if (state.os === 'win') return [
-        'nslookup doubleclick.net ' + ip + '   <span class="c"># expect 0.0.0.0</span>',
-        'nslookup github.com ' + ip + '        <span class="c"># expect a real address</span>'
-      ].join('\n');
-      return [
-        'dig +short @' + ip + ' doubleclick.net   <span class="c"># expect 0.0.0.0</span>',
-        'dig +short @' + ip + ' github.com        <span class="c"># expect a real address</span>'
-      ].join('\n');
+  function radios(name, value, onchange) {
+    var rs = document.querySelectorAll('input[name=' + name + ']');
+    for (var i = 0; i < rs.length; i++) {
+      rs[i].checked = rs[i].value === value;
+      rs[i].addEventListener('change', function (e) { onchange(e.target.value); });
     }
-  };
-
-  // ---------- secrets.h ----------
-  // C string literal: escape \ and ", and emit control bytes as 3-digit octal so a following
-  // digit can't extend the escape. Non-ASCII stays as UTF-8, which the compiler copies through.
-  function cstr(s) {
-    var out = '';
-    for (var i = 0; i < s.length; i++) {
-      var ch = s.charAt(i), c = s.charCodeAt(i);
-      if (ch === '\\' || ch === '"') out += '\\' + ch;
-      else if (c < 0x20 || c === 0x7f) out += '\\' + ('00' + c.toString(8)).slice(-3);
-      else out += ch;
-    }
-    return '"' + out + '"';
+    onchange(value);
   }
-  function utf8len(s) { try { return new TextEncoder().encode(s).length; } catch (e) { return s.length; } }
-  function val(id) { return document.getElementById(id).value; }
-  function setMsg(id, text, ok) {
-    var m = document.getElementById('m-' + id), inp = document.getElementById('s-' + id);
-    m.textContent = text || ''; m.className = 'msg' + (text ? (ok ? ' ok' : ' bad') : '');
-    if (inp) inp.className = text && !ok ? 'bad' : '';
+  function choose(attr, value) {
+    var els = document.querySelectorAll('[data-' + attr + ']');
+    for (var i = 0; i < els.length; i++) els[i].hidden = els[i].getAttribute('data-' + attr) !== value;
   }
-  function secretsText() {
-    var ssid = val('s-ssid'), wpass = val('s-wpass'), user = val('s-user').trim(), apass = val('s-apass'), ota = val('s-ota');
-    fallbackWifi = ssid.length > 0;
-    setMsg('ssid', ssid && utf8len(ssid) > 32 ? 'WiFi names are at most 32 bytes.' : '');
-    setMsg('wpass', !ssid && wpass ? 'Ignored without a WiFi name.' :
-      wpass && (wpass.length < 8 || utf8len(wpass) > 63) ? 'WPA2 passwords are 8–63 characters.' : '');
-    setMsg('user', '');
-    setMsg('apass', !apass ? '' : apass.length < 8 ? 'At least 8 characters.' : 'Looks good.', apass.length >= 8);
-    setMsg('ota', ota && ota.length < 8 ? 'Use at least 8 characters.' : '');
-    return [
-      '#pragma once',
-      '// Generated by START-HERE.html. Keep this file private: it is gitignored, and every',
-      '// value here is compiled into the firmware. Placeholders mean "not set".',
-      '',
-      '// Fallback WiFi, used only if none has been saved through the setup portal.',
-      'static const char* WIFI_SSID = ' + cstr(ssid || 'YOUR_WIFI_SSID') + ';',
-      'static const char* WIFI_PASS = ' + cstr(ssid ? wpass : 'YOUR_WIFI_PASSWORD') + ';',
-      '',
-      '// Dashboard login. A password chosen in the setup portal always wins over WEB_PASS.',
-      'static const char* WEB_USER = ' + cstr(user || 'admin') + ';',
-      'static const char* WEB_PASS = ' + cstr(apass.length >= 8 ? apass : 'CHANGE_ME_WEB_PASSWORD') + ';',
-      '// Network OTA (espota). Left as the placeholder, it defaults to the admin password.',
-      'static const char* OTA_PASS = ' + cstr(ota.length >= 8 ? ota : 'CHANGE_ME_OTA_PASSWORD') + ';',
-      ''
-    ].join('\n');
-  }
-  function genPassword() {
-    var A = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789', out = '';
-    var buf = new Uint32Array(20); (window.crypto || window.msCrypto).getRandomValues(buf);
-    for (var i = 0; i < 20; i++) { if (i && i % 5 === 0) out += '-'; out += A.charAt(buf[i] % A.length); }
-    return out;
-  }
+  function radioValue(name) { var r = document.querySelector('input[name=' + name + ']:checked'); return r ? r.value : ''; }
+  function setRadio(name, value) { var r = document.querySelector('input[name=' + name + '][value=' + value + ']'); if (r) r.checked = true; }
 
-  // ---------- rendering ----------
-  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  function cond(expr) {
-    var ctx = { board: state.board, method: state.method, os: state.os, browser: state.browser, list: state.list,
-                serial: serialFor(state.browser) ? 'yes' : 'no', fallback: (state.method === 'source' && fallbackWifi) ? 'yes' : 'no' };
-    return expr.split(/\s+/).every(function (c) {
-      var p = c.split('='); return p[1].split('|').indexOf(ctx[p[0]]) >= 0;
-    });
-  }
-  function render() {
-    normalize();
-    KEYS.forEach(function (k) {
-      var radios = document.querySelectorAll('input[name=' + k + ']');
-      for (var i = 0; i < radios.length; i++) radios[i].checked = radios[i].value === state[k];
-    });
-    document.querySelector('input[name=method][value=prebuilt]').disabled = state.board === 'esp32';
-    document.querySelector('input[name=list][value=everything]').disabled = state.board !== 's3';
-
-    var secrets = secretsText();
-    document.getElementById('secrets-out').textContent = secrets;
-
-    var x = v();
-    var ifs = document.querySelectorAll('[data-if]');
-    for (var i = 0; i < ifs.length; i++) ifs[i].hidden = !cond(ifs[i].getAttribute('data-if'));
-    var vs = document.querySelectorAll('[data-v]');
-    for (i = 0; i < vs.length; i++) vs[i].textContent = x[vs[i].getAttribute('data-v')];
-    var cmds = document.querySelectorAll('[data-cmd]');
-    for (i = 0; i < cmds.length; i++) {
-      // Commands are built from fixed strings plus escaped user input; only the comment
-      // spans are markup.
-      var html = CMDS[cmds[i].getAttribute('data-cmd')](x);
-      cmds[i].innerHTML = html.split(/(<span class="c">[^<]*<\/span>)/).map(function (part) {
-        return /^<span class="c">/.test(part) ? part : esc(part);
-      }).join('');
-    }
-
-    var fb = document.getElementById('fallback-admin-note');
-    var apass = val('s-apass');
-    fb.innerHTML = 'If the device joined your fallback WiFi directly, it skipped this page. ' +
-      (apass.length >= 8 ? 'Your admin password is the one from <code>secrets.h</code>.'
-        : 'You didn\'t set an admin password in <code>secrets.h</code>, so the dashboard stays locked until you choose one here: hold <b>BOOT</b> while plugging the board in to open setup.');
-
-    var b = state.browser, ser = serialFor(b);
-    document.getElementById('detect').textContent =
-      (b === detected.browser ? 'You\'re using ' + x.browserName + '. ' : '') +
-      (ser ? 'It can flash the board right from the web installer.'
-           : (mobile && b === detected.browser ? 'Flashing needs a desktop computer — ' : 'It can\'t flash over USB, so ') + 'the steps use the esptool command line instead.');
-
-    // number visible steps, restore ticks, update progress
-    var steps = document.querySelectorAll('.step'), n = 0, d = 0;
-    for (i = 0; i < steps.length; i++) {
-      var s = steps[i]; if (s.hidden) continue;
-      n++; s.querySelector('.num').textContent = n;
-      var cb = s.querySelector('.donebox input'), on = !!done[s.getAttribute('data-step')];
-      cb.checked = on; s.className = 'card step' + (on ? ' done' : '');
-      if (on) d++;
-    }
-    document.getElementById('progress-label').textContent = d + ' of ' + n + ' steps done';
-    document.getElementById('progress-bar').style.width = (n ? 100 * d / n : 0) + '%';
-    document.getElementById('all-done').hidden = d !== n;
-
-    var hash = '#' + KEYS.map(function (k) { return k + '=' + encodeURIComponent(state[k]); }).join('&');
-    if (location.hash !== hash) { try { history.replaceState(null, '', hash); } catch (e) { location.hash = hash; } }
-    var choices = {}; KEYS.forEach(function (k) { choices[k] = state[k]; });
-    save({ choices: choices, done: done });
-  }
-
-  // ---------- copy (Clipboard API, with a fallback for file:// in Safari/Firefox) ----------
-  function copyText(text, btn) {
-    function ok() { btn.textContent = 'Copied'; btn.className = 'copy ok'; setTimeout(function () { btn.textContent = 'Copy'; btn.className = 'copy'; }, 1500); }
+  // copy buttons (Clipboard API, falling back to execCommand for file:// in Safari/Firefox)
+  document.addEventListener('click', function (e) {
+    var btn = e.target;
+    if (!btn.classList || !btn.classList.contains('copy')) return;
+    var text = btn.parentNode.querySelector('pre').textContent;
+    function ok() { btn.textContent = 'Copied'; btn.classList.add('ok'); setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('ok'); }, 1500); }
     function fallback() {
-      var ta = document.createElement('textarea');
-      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+      var ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.top = '-1000px';
       document.body.appendChild(ta); ta.select();
-      var good = false; try { good = document.execCommand('copy'); } catch (e) {}
+      var good = false; try { good = document.execCommand('copy'); } catch (err) {}
       document.body.removeChild(ta);
-      if (good) ok(); else { btn.textContent = 'Select & copy'; selectPre(btn); }
+      if (good) ok(); else btn.textContent = 'Select it';
     }
-    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(ok, fallback);
-    else fallback();
-  }
-  function selectPre(btn) {
-    var pre = btn.parentNode.querySelector('pre'), r = document.createRange();
-    r.selectNodeContents(pre); var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
-  }
-
-  // ---------- events ----------
-  document.getElementById('choices').addEventListener('change', function (e) {
-    if (e.target.name && KEYS.indexOf(e.target.name) >= 0) { state[e.target.name] = e.target.value; render(); }
-  });
-  document.getElementById('steps').addEventListener('change', function (e) {
-    var s = e.target.closest && e.target.closest('.step');
-    if (s && e.target.parentNode.className === 'donebox') { done[s.getAttribute('data-step')] = e.target.checked; render(); }
-  });
-  document.getElementById('steps').addEventListener('click', function (e) {
-    if (e.target.className.indexOf && e.target.className.indexOf('copy') === 0) {
-      var pre = e.target.parentNode.querySelector('pre');
-      copyText(pre.textContent, e.target);
-    }
-  });
-  ['s-ssid', 's-wpass', 's-user', 's-apass', 's-ota', 'port', 'ip'].forEach(function (id) {
-    document.getElementById(id).addEventListener('input', render);
-  });
-  document.getElementById('s-show').addEventListener('change', function (e) {
-    ['s-wpass', 's-apass', 's-ota'].forEach(function (id) { document.getElementById(id).type = e.target.checked ? 'text' : 'password'; });
-  });
-  document.getElementById('s-gen').addEventListener('click', function () {
-    var a = document.getElementById('s-apass'); a.value = genPassword(); a.type = 'text';
-    document.getElementById('s-show').checked = true; render();
-  });
-  document.getElementById('s-download').addEventListener('click', function () {
-    var blob = new Blob([secretsText()], { type: 'text/plain' });
-    var url = URL.createObjectURL(blob), a = document.createElement('a');
-    a.href = url; a.download = 'secrets.h'; document.body.appendChild(a); a.click();
-    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-  });
-  document.getElementById('reset').addEventListener('click', function () {
-    done = {}; state = { board: 'c3', method: 'prebuilt', os: detected.os, browser: detected.browser, list: 'default' };
-    ['s-ssid', 's-wpass', 's-user', 's-apass', 's-ota', 'port', 'ip'].forEach(function (id) { document.getElementById(id).value = ''; });
-    render(); window.scrollTo(0, 0);
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(ok, fallback); else fallback();
   });
 
-  render();
+  // ======================= mode 1: no helper yet =======================
+  function offline() {
+    show($('offline'), true);
+    radios('os', OS, function (v) { choose('os', v); });
+    var found = false;
+    function probe() {
+      if (found) return;
+      var ports = [], failed = 0;
+      for (var p = 8765; p <= 8775; p++) ports.push(p);
+      ports.forEach(function (port) {
+        var ctl = window.AbortController ? new AbortController() : null;
+        var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 2500);
+        fetch('http://127.0.0.1:' + port + '/ping', ctl ? { signal: ctl.signal } : {}).then(function (r) { return r.json(); }).then(function (j) {
+          clearTimeout(timer);
+          if (!j.helper || found) return;
+          found = true;
+          $('v-icon').textContent = '✓'; $('v-icon').className = 'i good';
+          $('v-text').textContent = 'The helper is running.';
+          $('v-go').href = 'http://127.0.0.1:' + port + '/'; show($('v-go'), true);
+        }).catch(function () {
+          clearTimeout(timer);
+          if (++failed === ports.length && !found) {
+            $('v-icon').textContent = '✗'; $('v-icon').className = 'i badc';
+            $('v-text').textContent = 'Not running yet. Run the commands above; this checks again every few seconds.';
+            show($('v-direct'), true);
+          }
+        });
+      });
+    }
+    $('v-check').addEventListener('click', probe);
+    probe(); setInterval(probe, 4000);
+  }
+
+  // ======================= mode 2: driven by start-here.py =======================
+  function app(cfg) {
+    show($('app'), true);
+    function api(path, body) {
+      var opt = { headers: { 'X-Setup-Token': cfg.token, 'Content-Type': 'application/json' } };
+      if (body !== undefined) { opt.method = 'POST'; opt.body = JSON.stringify(body); }
+      return fetch(path, opt).then(function (r) {
+        return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; });
+      });
+    }
+    var S = { port: '', chip: '', info: null, installed: false, provisioned: false, busy: false, autoDetected: false };
+
+    function unlock(id, on) { $(id).classList.toggle('locked', !on); }
+    function done(id, on) { $(id).classList.toggle('done', !!on); }
+    function render() {
+      var havePort = !!S.port;
+      var setupMode = !!(S.info && S.info.mode === 'setup');
+      var online = !!(S.info && S.info.mode === 'online' && S.info.ip);
+      done('st-check', havePort);
+      unlock('st-board', havePort); done('st-board', !!S.chip);
+      unlock('st-install', havePort && !!S.chip); done('st-install', S.installed || online);
+      unlock('st-wifi', setupMode); done('st-wifi', S.provisioned || online);
+      unlock('st-dash', online); unlock('st-use', online);
+      show($('w-cur-l'), setupMode && !!S.info.admin);
+      if (online) {
+        $('d-ip').href = 'https://' + S.info.ip; $('d-ip').textContent = 'https://' + S.info.ip;
+        $('d-fp').textContent = S.info.fp || '(see the board console)';
+      }
+      $('i-what').textContent = radioValue('method') === 'source'
+        ? 'It builds everything from this folder with PlatformIO (installed into .setup-venv the first time).'
+        : 'It downloads the prebuilt image for your board and checks it before flashing.';
+      ['b-detect', 'b-info', 'i-go', 'w-go'].forEach(function (id) { $(id).disabled = S.busy; });
+    }
+
+    // ---- step 1: status, ports ----
+    function refreshStatus() {
+      return api('/api/status').then(function (st) {
+        $('c-py').textContent = st.python; $('c-esp').textContent = st.esptool;
+        var sel = $('c-port'), prev = S.port;
+        var opts = st.ports.map(function (p) {
+          return '<option value="' + esc(p.port) + '">' + esc(p.port) + (p.kind ? ' — ' + esc(p.kind) : (p.desc ? ' — ' + esc(p.desc) : '')) + '</option>';
+        }).join('');
+        if (sel.innerHTML !== opts) sel.innerHTML = opts;
+        var still = st.ports.some(function (p) { return p.port === prev; });
+        if (!still) { S.port = st.ports.length ? st.ports[0].port : ''; if (prev) { S.chip = ''; S.autoDetected = false; } }
+        sel.value = S.port;
+        var likely = st.ports.filter(function (p) { return p.likely; }).length;
+        $('c-port-i').textContent = S.port ? '✓' : '…'; $('c-port-i').className = 'i' + (S.port ? ' good' : '');
+        $('c-port-t').textContent = !S.port ? 'Waiting for the board…'
+          : st.ports.length > 1 ? 'Found ' + st.ports.length + ' USB serial ports: pick the board below.' : 'Board found on ' + S.port;
+        show($('c-ports'), st.ports.length > 1 || (st.ports.length === 1 && !likely));
+        show($('c-noport'), !st.ports.length);
+        $('c-linux').textContent = st.linuxGroups ? 'Your user can\'t open USB serial ports yet. Run this in a terminal, then log out and back in: ' + st.linuxGroups : '';
+        show($('c-linux'), !!st.linuxGroups);
+        render();
+        if (S.port && !S.chip && !S.busy && !S.autoDetected && st.ports.length === 1) { S.autoDetected = true; detect(); }
+      }).catch(function (e) {
+        $('c-port-i').textContent = '✗'; $('c-port-i').className = 'i badc';
+        $('c-port-t').textContent = 'Lost contact with the helper. Is the terminal still running? (' + e.message + ')';
+      });
+    }
+    $('c-port').addEventListener('change', function (e) { S.port = e.target.value; S.chip = ''; S.autoDetected = false; render(); });
+
+    // ---- jobs: start one, then poll until it finishes ----
+    function runJob(path, body, prog) {
+      S.busy = true; render();
+      var box = $(prog); show(box, true);
+      box.innerHTML = '<div class="jhead"><span class="spinner"></span><span class="jstep">Starting…</span></div><details><summary class="note">Details</summary><pre class="log"></pre></details>';
+      function finish(ok, text) {
+        S.busy = false;
+        box.querySelector('.jhead').innerHTML = ok ? '<span class="good">✓ ' + esc(text) + '</span>' : '<span class="badc">✗ ' + esc(text) + '</span>';
+        if (!ok) box.querySelector('details').open = true;
+        render();
+      }
+      return api(path, body).then(function () {
+        return new Promise(function (resolve, reject) {
+          (function poll() {
+            api('/api/job').then(function (j) {
+              box.querySelector('.jstep') && (box.querySelector('.jstep').textContent = j.step || '');
+              var log = box.querySelector('.log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+              log.textContent = (j.log || []).join('\n'); if (atEnd) log.scrollTop = log.scrollHeight;
+              if (j.state === 'running') { setTimeout(poll, 700); return; }
+              if (j.state === 'ok') { finish(true, 'Done.'); resolve(j.result); }
+              else { finish(false, j.error); reject(new Error(j.error)); }
+            }).catch(function (e) { finish(false, e.message); reject(e); });
+          })();
+        });
+      }, function (e) { finish(false, e.message); throw e; });
+    }
+
+    // ---- step 2: board ----
+    var CHIPN = { c3: 'ESP32-C3', s3: 'ESP32-S3', esp32: 'classic ESP32' };
+    function setChip(c) {
+      S.chip = c; setRadio('chip', c);
+      document.querySelector('input[name=method][value=prebuilt]').disabled = c === 'esp32';
+      if (c === 'esp32') setRadio('method', 'source');
+      render();
+    }
+    function detect() {
+      $('b-result').innerHTML = '';
+      return runJob('/api/detect', { port: S.port }, 'b-prog').then(function (r) {
+        show($('b-prog'), false);
+        $('b-result').innerHTML = '<span class="good">✓ ' + CHIPN[r.chip] + ' detected</span>';
+        setChip(r.chip);
+      }, function () {
+        $('b-result').innerHTML = '<span class="note">Couldn\'t detect it automatically: pick your board below.</span>';
+      });
+    }
+    $('b-detect').addEventListener('click', detect);
+    radios('chip', '', function (v) { if (v) setChip(v); });
+    radios('method', 'prebuilt', function () { render(); });
+    $('b-info').addEventListener('click', function () {
+      runJob('/api/info', { port: S.port }, 'b-prog').then(function (info) {
+        show($('b-prog'), false);
+        S.info = info;
+        var box = $('b-online');
+        if (info.mode === 'online') {
+          box.innerHTML = '✓ This board is already set up and online at <b>' + esc(info.ip) + '</b>: continue with step 5. To set it up again, unplug it, hold <b>BOOT</b> while plugging it back in, and press this button again.';
+        } else {
+          box.innerHTML = 'The board is waiting for its WiFi settings: continue with step 4.';
+          loadNets();
+        }
+        show(box, true); render();
+      }, function () {});
+    });
+
+    // ---- step 3: install ----
+    $('i-go').addEventListener('click', function () {
+      S.installed = false; S.provisioned = false; S.info = null; render();
+      runJob('/api/install', { port: S.port, chip: S.chip, method: radioValue('method') }, 'i-prog').then(function (info) {
+        S.installed = true; S.info = info; render();
+        if (info.mode === 'setup') { loadNets(); $('st-wifi').scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      }, function () {});
+    });
+
+    // ---- step 4: WiFi + admin ----
+    function loadNets() {
+      $('w-nets-msg').textContent = 'Asking the board which networks it can see…';
+      api('/api/nets', { port: S.port }).then(function (r) {
+        $('w-nets').innerHTML = r.nets.map(function (n) { return '<option value="' + esc(n) + '">'; }).join('');
+        $('w-nets-msg').textContent = r.nets.length ? 'The board sees ' + r.nets.length + ' network' + (r.nets.length === 1 ? '' : 's') + ': click the box to pick one.' : 'The board didn\'t list any networks: type the name.';
+        if (!$('w-ssid').value && r.nets.length === 1) $('w-ssid').value = r.nets[0];
+      }, function () { $('w-nets-msg').textContent = ''; });
+    }
+    $('w-refresh').addEventListener('click', function (e) { e.preventDefault(); loadNets(); });
+    function utf8len(s) { try { return new TextEncoder().encode(s).length; } catch (e) { return s.length; } }
+    function msg(id, text, good) { $(id).textContent = text; $(id).className = 'msg' + (text ? (good ? ' ok' : ' bad') : ''); }
+    function validate(final) {
+      var ok = true, ssid = $('w-ssid').value, pw = $('w-pass').value, a = $('w-admin').value, a2 = $('w-admin2').value;
+      if ((final && !ssid) || utf8len(ssid) > 32) ok = false;
+      if (pw && (pw.length < 8 || utf8len(pw) > 63)) { msg('m-pass', 'WiFi passwords are 8 to 63 characters.'); ok = false; }
+      else msg('m-pass', pw ? '' : 'Leave empty for an open network.', true);
+      if (a && a.length < 8) { msg('m-admin', 'At least 8 characters.'); ok = false; }
+      else if (final && !a) { msg('m-admin', 'Choose an admin password.'); ok = false; }
+      else msg('m-admin', a ? 'Looks good.' : '', true);
+      if (a2 && a2 !== a) { msg('m-admin2', 'Doesn\'t match.'); ok = false; }
+      else if (final && a2 !== a) { msg('m-admin2', 'Type the same password again.'); ok = false; }
+      else msg('m-admin2', a2 ? 'Matches.' : '', true);
+      return ok;
+    }
+    ['w-ssid', 'w-pass', 'w-admin', 'w-admin2'].forEach(function (id) { $(id).addEventListener('input', function () { validate(false); }); });
+    function showPw(on) { ['w-pass', 'w-admin', 'w-admin2', 'w-cur'].forEach(function (id) { $(id).type = on ? 'text' : 'password'; }); }
+    $('w-show').addEventListener('change', function (e) { showPw(e.target.checked); });
+    $('w-gen').addEventListener('click', function () {
+      var A = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789', buf = new Uint32Array(20), out = '';
+      crypto.getRandomValues(buf);
+      for (var i = 0; i < 20; i++) { if (i && i % 5 === 0) out += '-'; out += A.charAt(buf[i] % A.length); }
+      $('w-admin').value = $('w-admin2').value = out; $('w-show').checked = true; showPw(true);
+      validate(false);
+    });
+    $('w-go').addEventListener('click', function () {
+      if (!validate(true)) { if (!$('w-ssid').value) $('w-ssid').focus(); return; }
+      runJob('/api/provision', { port: S.port, ssid: $('w-ssid').value, pass: $('w-pass').value,
+                                  admin: $('w-admin').value, current: $('w-cur').value }, 'w-prog').then(function (info) {
+        S.info = info; S.provisioned = true;
+        $('w-pass').value = $('w-admin').value = $('w-admin2').value = $('w-cur').value = '';   // don't keep them around
+        render();
+        $('st-dash').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, function () {});
+    });
+
+    // ---- step 5: browser-specific certificate steps ----
+    radios('browser', BROWSER, function (v) { choose('browser', v); });
+
+    // ---- board console ----
+    setInterval(function () {
+      if (!$('con-box').open) return;
+      api('/api/console').then(function (r) { if (r.lines.length) $('console').textContent = r.lines.join('\n'); }, function () {});
+    }, 1500);
+
+    render();
+    refreshStatus();
+    setInterval(function () { if (!S.busy) refreshStatus(); }, 2500);
+  }
+
+  if (window.HELPER && window.HELPER.token) app(window.HELPER); else offline();
 })();
 </script>
 </body>

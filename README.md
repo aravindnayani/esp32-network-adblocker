@@ -20,7 +20,7 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 
 ## Get started
 
-**You need:** one of the boards below, a USB cable, and a computer with Chrome, Edge, Safari or Firefox.
+**You need:** one of the boards below, a USB cable, and a computer with Python 3.9+ and Chrome, Edge, Safari or Firefox.
 
 | Board | Price | Blocklist room | Prebuilt image |
 |---|---|---|---|
@@ -28,24 +28,29 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 | **ESP32-S3**, 8 MB+ flash (e.g. S3 DevKitC-1 N8/N16) | ~$5–10 | ~1M domains | ✅ |
 | Classic **ESP32**, 4 MB (DevKit / WROOM) | ~$3–5 | ~250k domains | build from source |
 
-The C3 is plenty for the default ~100k-domain list. Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi).
+The C3 is plenty for the default ~100k-domain list, and for every category combination the dashboard offers (at most ~180k). Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi).
 
-### ▶ Open [`START-HERE.html`](START-HERE.html)
+### ▶ Run the setup helper
 
-Clone or download this repository and open **`START-HERE.html`** in your browser. Pick your board, install method, computer and browser, and it shows exactly the steps you need, from flashing to the dashboard, with commands you can copy:
+Get this repository, then start the helper from its folder:
 
 ```bash
 git clone https://github.com/aravindnayani/esp32-network-adblocker
-open esp32-network-adblocker/START-HERE.html     # Windows: start …, Linux: xdg-open …
+cd esp32-network-adblocker
+python3 start-here.py          # Windows: py start-here.py
 ```
 
-Chrome and Edge flash straight from the [web installer](https://aravindnayani.github.io/esp32-network-adblocker/). Safari and Firefox can't talk to USB devices, so the page walks you through three `esptool` commands instead. It works offline, and nothing you type into it leaves the page.
+It opens a setup page in your browser (Chrome, Edge, Safari or Firefox) and does the rest from there. It checks your computer, finds the board on USB, flashes it, and sends your WiFi and admin password to it over the cable. No setup WiFi, no terminal commands to copy. You only need Python 3.9+; the helper puts esptool in a private `.setup-venv` folder.
+
+New to the terminal? Open [`START-HERE.html`](START-HERE.html) in your browser first. It shows how to install Python and start the helper on macOS, Windows or Linux.
+
+Once the board is online, open **https://c3adblock.local**. Its **Finish setting up** card walks you through choosing what to block (social media, gambling, adult content, fake news, on top of ads and trackers), exceptions for apps that must keep working, and pointing your router at it.
 
 ### Turn it on for your network
 
-Set your router's DNS server to the ESP32's IP address. You can also set it on a single device first to try it out.
+The dashboard tells you how, and ticks it off once devices start using it: set your router's DNS server to the ESP32's IP address. You can also set it on a single device first to try it out.
 
-Check that it's working:
+To check from a terminal:
 
 ```bash
 dig @<esp32-ip> doubleclick.net
@@ -63,15 +68,17 @@ All of this happens on the dashboard at **https://c3adblock.local** (user `admin
 |---|---|
 | See what's being blocked | Dashboard home: blocked and allowed counts for each device |
 | Turn blocking off for a bit | **Pause**. Up to 15 min/hour needs only the password. Longer needs a BOOT press. |
+| Choose what to block | **What to block**: ads & trackers always, plus social media, gambling, adult content, fake news. Needs a BOOT press. |
+| Keep an app working anyway | Add an **exception**, or a quick pick like WhatsApp or YouTube. It covers subdomains too. |
 | Block one more site | Add it under **Custom domains** |
 | Cut off a device | **Ban** it. The ban follows its MAC address, so changing its IP won't help. |
-| Keep the blocklist fresh | Set an **auto-update URL**, e.g. the weekly build below |
+| Keep the blocklist fresh | Automatic after **What to block**. Or set your own **auto-update URL**. |
 | Update the firmware | **Firmware → OTA update**, then press BOOT when the LED blinks |
-| Move to a new WiFi | **Forget WiFi**. Your admin password is kept. |
-| Recover a lost password | Hold **BOOT** while plugging it in. This wipes WiFi and the password and reopens setup. |
+| Move to a new WiFi | **Forget WiFi**, then run `start-here.py` again. Your admin password is kept. |
+| Recover a lost password | Hold **BOOT** while plugging it in, then run `start-here.py` again. This wipes WiFi and the password. |
 
-**Weekly blocklist:** a fresh default list is published every Monday at
-`https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/blocklist.bin`
+**Weekly blocklists:** fresh lists are published every Monday: `blocklist.bin` (ads and trackers) and `blocklist-<categories>.bin` for each combination of categories, at
+`https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/`
 
 ---
 
@@ -107,7 +114,7 @@ A small index in RAM points each lookup to a single flash read. Blocking `exampl
 
 ## Building it yourself
 
-Choose **Build from source** in [`START-HERE.html`](START-HERE.html): it fills in `src/secrets.h` for you and gives the PlatformIO commands for your board. In short:
+Choose **Build from source** in the setup helper (`python3 start-here.py`): it installs PlatformIO into `.setup-venv`, builds for your board and flashes it. By hand:
 
 ```bash
 pip install -U platformio

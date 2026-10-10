@@ -1,6 +1,6 @@
 name: blocklist
 
-# Rebuilds the default blocklist weekly and publishes it at a stable URL:
+# Rebuilds the blocklists weekly and publishes them at stable URLs, e.g.:
 #   https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/blocklist.bin
 # Point a device's "Remote auto-update" at that URL and it stays current on its own.
 on:
@@ -19,27 +19,58 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Build default blocklist (fails if any source is unreachable)
-        run: python3 tools/build_blocklist.py blocklist.bin 2>&1 | tee build.log
+      # One list per combination of the optional categories the dashboard offers. Each is
+      # StevenBlack's matching "alternates" hosts file (base + those categories) plus Hagezi
+      # Light. blocklist.bin (no extras) keeps its old name, so devices already pointed at it
+      # carry on. Names list categories in this fixed order: fakenews, gambling, porn, social.
+      - name: Download sources once
+        run: |
+          set -euo pipefail
+          mkdir src
+          sb=https://raw.githubusercontent.com/StevenBlack/hosts/master
+          curl -fsSL -o src/hagezi-light https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/light-onlydomains.txt
+          curl -fsSL -o src/base "$sb/hosts"
+          for combo in $(python3 -c "
+          import itertools; c = ['fakenews', 'gambling', 'porn', 'social']
+          print(' '.join('-'.join(x) for n in range(1, 5) for x in itertools.combinations(c, n)))"); do
+            curl -fsSL -o "src/$combo" "$sb/alternates/$combo/hosts"
+          done
+          ls -l src
+      - name: Build every list
+        run: |
+          set -euo pipefail
+          mkdir out
+          python3 tools/build_blocklist.py out/blocklist.bin src/base src/hagezi-light 2>&1 | tee build.log
+          for f in src/*; do
+            name=$(basename "$f"); case "$name" in base|hagezi-light) continue;; esac
+            python3 tools/build_blocklist.py "out/blocklist-$name.bin" "$f" src/hagezi-light 2>&1 | tail -3
+          done
       - name: Sanity checks
         run: |
-          size=$(stat -c%s blocklist.bin)
-          echo "size=$size bytes"
-          test $((size % 5)) -eq 0                  # whole 40-bit entries
-          test "$size" -gt 250000                   # >50k entries, catches a silently shrunk list
-          test "$size" -lt 1300000                  # fits the dual-OTA filesystem partition
+          set -euo pipefail
+          test "$(ls out/*.bin | wc -l)" -eq 16
+          for f in out/*.bin; do
+            size=$(stat -c%s "$f"); echo "$f: $((size / 5)) entries"
+            test $((size % 5)) -eq 0                # whole 40-bit entries
+            test "$size" -gt 250000                 # >50k entries, catches a silently shrunk list
+            test "$size" -lt 1300000                # fits the C3's filesystem partition (dual OTA)
+          done
+          # Every extra category must add to the base list, never replace it.
+          base=$(stat -c%s out/blocklist.bin)
+          for f in out/blocklist-*.bin; do test "$(stat -c%s "$f")" -gt "$base"; done
       - name: Publish to the 'blocklist' release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          entries=$(( $(stat -c%s blocklist.bin) / 5 ))
-          notes="Auto-built $(date -u +%F) — ${entries} entries (StevenBlack base + Hagezi Light).
+          entries=$(( $(stat -c%s out/blocklist.bin) / 5 ))
+          notes="Auto-built $(date -u +%F). blocklist.bin: ${entries} entries (StevenBlack base + Hagezi Light).
+          blocklist-<categories>.bin add social media, gambling, adult content and/or fake news (StevenBlack alternates).
 
-          Set this as the device's Remote auto-update URL:
+          Pick categories on the device's dashboard under What to block, or set one of these as its Remote auto-update URL:
           https://github.com/${{ github.repository }}/releases/download/blocklist/blocklist.bin"
           if gh release view blocklist >/dev/null 2>&1; then
             gh release edit blocklist --notes "$notes"
           else
             gh release create blocklist --title "Weekly blocklist" --notes "$notes" --latest=false
           fi
-          gh release upload blocklist blocklist.bin --clobber
+          gh release upload blocklist out/*.bin --clobber

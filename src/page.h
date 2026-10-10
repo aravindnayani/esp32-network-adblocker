@@ -17,10 +17,16 @@ th{background:#21262d;color:#8b949e}tr:hover td{background:#1c2128}
 button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:4px 9px;cursor:pointer}
 button:hover{background:#30363d}.ban{color:#f85149}input{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;padding:6px}
 h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
+.panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 14px;margin-bottom:14px}
+.cats label{display:block;margin:6px 0}.cats small,.muted{color:#8b949e;font-size:12px}
+.chip{margin:3px 4px 3px 0}.chip.on{border-color:#3fb950;color:#3fb950}
+#setup ol{margin:6px 0 8px;padding-left:20px}#setup li{margin:6px 0}#setup .ok{color:#3fb950}
+details.help{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:12px}
+details.help summary{cursor:pointer;font-weight:600}details.help li{margin:4px 0}code{background:#21262d;padding:0 4px;border-radius:4px}
 </style></head><body>
 <header><h1>🛡️ C3 AdBlock <span id=host></span></h1></header><div class=wrap>
 <div id=credwarn style="display:none;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px">
-⚠️ <b>No admin password set.</b> Settings, uploads and firmware updates are locked. To set one, hold the <b>BOOT</b> button while powering the device on, then join its <code>C3-AdBlock-XXXX</code> WiFi (password on the serial console) and fill in the setup page.
+⚠️ <b>No admin password set.</b> Settings, uploads and firmware updates are locked. To set one, hold the <b>BOOT</b> button while plugging the device into your computer, then run <code>python3 start-here.py</code> from the project folder (or join its <code>C3-AdBlock-XXXX</code> WiFi and fill in the setup page).
 </div>
 <div id=glock style="display:none;margin-bottom:10px;padding:10px 14px;background:#3b1d1d;border:1px solid #f85149;color:#ffb3ae;border-radius:8px;font-size:13px"></div>
 <div id=loginbar style="display:none;align-items:center;gap:12px;margin-bottom:14px;padding:12px 14px;background:#161b22;border:1px solid #30363d;border-radius:8px">
@@ -35,6 +41,33 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <div class=cards id=sys></div>
 <div id=upstat style="color:#8b949e;font-size:12px;margin:-6px 0 14px"></div>
 <div id=admin style=display:none>
+<div id=setup class=panel style="display:none;border-color:#3fb950">
+<b>👋 Finish setting up</b> <span class=muted>&mdash; three things left, all on this page</span>
+<ol>
+<li id=s1><b>Choose what to block</b> below, under <a href=#blocksec style=color:#58a6ff>What to block</a>, and press <b>Apply</b>. <span class=ok></span></li>
+<li id=s2><b>Send your network's DNS here.</b> In your router's settings (usually <i>DHCP</i> or <i>LAN</i>), set the DNS server to <code class=myip></code>, and reserve that address for this device so it doesn't change. To try it first, set the DNS on just this computer or phone instead. <span class=ok></span></li>
+<li id=s3><b>Check it works.</b> Reconnect this device to WiFi, browse a little, and come back. <span class=ok></span></li>
+</ol>
+<div id=setupAll class=ok style="display:none;margin-bottom:8px">🎉 All set: ads are being blocked on your network.</div>
+<button onclick="setupDone(1)">I'm done &mdash; hide this</button> <span class=muted>Then see <a href=#helpsec style=color:#58a6ff>How to use &amp; update</a> at the bottom.</span></div>
+<h2 id=blocksec>WHAT TO BLOCK</h2>
+<div class="panel cats">
+<label><input type=checkbox checked disabled> Ads, trackers &amp; malware <small>&mdash; always on (StevenBlack + Hagezi Light)</small></label>
+<label><input type=checkbox class=cat value=social> Social media <small>&mdash; Facebook, Instagram, TikTok, X, Snapchat&hellip;</small></label>
+<label><input type=checkbox class=cat value=gambling> Gambling <small>&mdash; betting and casino sites</small></label>
+<label><input type=checkbox class=cat value=porn> Adult content</label>
+<label><input type=checkbox class=cat value=fakenews> Fake news <small>&mdash; known misinformation sites</small></label>
+<div style=margin-top:10px><button onclick=applyCats()>Apply</button> <span id=catmsg class=muted></span></div>
+<div class=muted style=margin-top:6px>Applying downloads the matching list from this project's weekly build, keeps it up to date every day, and needs a BOOT press. Need one app through anyway? Add an exception below.</div>
+</div>
+<h2>EXCEPTIONS &mdash; NEVER BLOCKED</h2>
+<div class=panel>
+<div style=margin-bottom:8px><input id=alw placeholder="whatsapp.com" size=30><button onclick=addAllow()>Allow domain</button></div>
+<div class=muted>Quick picks (each adds the domains the app needs):</div>
+<div id=picks style=margin:4px 0 8px></div>
+<div class=muted style=margin-bottom:6px>An exception also covers subdomains: allowing <code>whatsapp.com</code> lets <code>web.whatsapp.com</code> through.</div>
+<table id=al style=margin-bottom:0><tbody></tbody></table>
+</div>
 <h2>CLIENTS</h2><table id=ct><thead><tr><th>Client</th><th>MAC</th><th>Blocked</th><th>Allowed</th><th></th></tr></thead><tbody></tbody></table>
 <h2>CUSTOM BLOCKED DOMAINS</h2>
 <div style=margin-bottom:8px><input id=dom placeholder="ads.example.com" size=30><button onclick=addDom()>Block domain</button></div>
@@ -56,6 +89,19 @@ h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 <div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin></span></div>
 <table id=lt><thead><tr><th>Locked out</th><th>MAC</th><th>Wrong passwords</th><th>Status</th></tr></thead><tbody></tbody></table>
 <table id=at><thead><tr><th>When</th><th>From</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
+<h2 id=helpsec>HOW TO USE &amp; UPDATE</h2>
+<details class=help open><summary>Using it day to day</summary><ul>
+<li>Open this page any time at <b>https://c3adblock.local</b> (or <code class=myip></code>) and log in as the admin user.</li>
+<li><b>A site or app is broken?</b> Add it under <i>Exceptions</i>, or press <b>Pause</b> at the top for a few minutes to check whether blocking is the cause.</li>
+<li><b>Block one more site:</b> add it under <i>Custom blocked domains</i>.</li>
+<li><b>Cut a device off the internet:</b> <i>Ban</i> it under <i>Clients</i>. The ban follows its MAC address.</li>
+<li><b>Lost the admin password?</b> Hold <b>BOOT</b> while powering on, then run setup again (<code>python3 start-here.py</code>). That also clears the saved WiFi.</li>
+</ul></details>
+<details class=help><summary>Keeping it up to date</summary><ul>
+<li><b>Blocklist:</b> after <i>Apply</i> under <i>What to block</i>, the device downloads a fresh list on its own every day. Use <i>Fetch now</i> under <i>Remote auto-update</i> to update straight away.</li>
+<li><b>Firmware:</b> download a new <code>firmware.bin</code> (or build one), choose it under <i>Firmware &mdash; OTA update</i>, then press <b>BOOT</b> when the LED blinks. Settings, exceptions and the blocklist are kept.</li>
+<li><b>Moving house / new router:</b> <i>Forget WiFi</i>, then run setup again. Your admin password is kept.</li>
+</ul></details>
 </div></div><script>
 function fmt(n){return n.toLocaleString()}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -101,7 +147,50 @@ at.tBodies[0].innerHTML=s.audit.map(a=>`<tr><td>${ago(a.ago)}</td><td>${esc(a.ip
 upurlNow=s.upurl||'';
 if(document.activeElement!=uurl)uurl.value=s.upurl||'';
 if(document.activeElement!=uiv)uiv.value=s.upiv||24;
-ustat.textContent=s.upstat||'—';}
+ustat.textContent=s.upstat||'—';
+al.tBodies[0].innerHTML=s.allow.map(d=>`<tr><td>${esc(d)}</td><td style=text-align:right><button class=rmalw data-d="${esc(d)}">remove</button></td></tr>`).join('')||'<tr><td style=color:#8b949e>none yet</td></tr>';
+allowNow=s.allow;drawPicks();
+let cur=catsFromUrl(s.upurl||'');if(!catsTouched)document.querySelectorAll('.cat').forEach(c=>c.checked=!!cur&&cur.includes(c.value));
+if(!catmsg.dataset.busy)catmsg.textContent=cur?'In use: '+(cur.length?cur.map(c=>CATN[c]).join(', ')+' + ':'')+'ads & trackers.':(s.upurl?'A custom list URL is in use (see Remote auto-update).':'Not set yet: the device only has the list it was installed with.');
+document.querySelectorAll('.myip').forEach(e=>e.textContent=s.ip);
+let me=s.clients.find(c=>c.ip==s.you),others=s.clients.filter(c=>c.ip!=s.you&&c.blocked+c.allowed>0).length;
+let d1=!!cur,d2=others>0,d3=!!me&&me.blocked+me.allowed>0;
+mark(s1,d1,'✓ done');mark(s2,d2,'✓ '+others+' other device'+(others==1?' is':'s are')+' using it');
+mark(s3,d3,'✓ this device is using it ('+(me?fmt(me.blocked):0)+' blocked so far)');
+setupAll.style.display=d1&&d2&&d3?'':'none';
+setup.style.display=lsGet('setupDone')?'none':'block';}
+function mark(li,ok,t){li.querySelector('.ok').textContent=ok?t:'';li.style.opacity=ok?.7:1}
+function lsGet(k){try{return localStorage.getItem('c3ab-'+k)}catch(_){return null}}
+function lsSet(k,v){try{localStorage.setItem('c3ab-'+k,v)}catch(_){}}
+function setupDone(){lsSet('setupDone',1);setup.style.display='none'}
+// Category lists are built weekly by this project's CI (blocklist.yml): blocklist.bin is ads +
+// trackers, blocklist-<cats>.bin adds the chosen categories in this fixed order.
+const LISTS='https://github.com/aravindnayani/esp32-network-adblocker/releases/download/blocklist/';
+const CATS=['fakenews','gambling','porn','social'],CATN={fakenews:'fake news',gambling:'gambling',porn:'adult content',social:'social media'};
+let catsTouched=false,allowNow=[];
+document.querySelectorAll('.cat').forEach(c=>c.onchange=()=>{catsTouched=true});
+function catsUrl(sel){return LISTS+(sel.length?'blocklist-'+sel.join('-')+'.bin':'blocklist.bin')}
+function catsFromUrl(u){if(!u.startsWith(LISTS))return null;let f=u.slice(LISTS.length);if(f=='blocklist.bin')return[];
+let m=/^blocklist-([a-z-]+)\.bin$/.exec(f);if(!m)return null;let c=m[1].split('-');return c.every(x=>CATS.includes(x))?c:null}
+async function applyCats(){let sel=CATS.filter(c=>document.querySelector('.cat[value='+c+']').checked),u=catsUrl(sel);
+catmsg.dataset.busy=1;catmsg.textContent='waiting for BOOT press...';
+try{if(u!=upurlNow){if(!await gated('setupdate',u)){catmsg.textContent='not applied';return}
+let r=await fetch('/setupdate?u='+encodeURIComponent(u)+'&h=24',{headers:CSRF_HDRS});if(!r.ok){catmsg.textContent='✗ '+await r.text();return}}
+catmsg.textContent='downloading the new list (up to a minute)...';
+let t=await(await fetch('/fetchnow',{headers:CSRF_HDRS})).text();catmsg.textContent=(t.startsWith('ok')?'✓ ':'✗ ')+t;catsTouched=false}
+finally{delete catmsg.dataset.busy;setTimeout(load,1500)}}
+// Domains each app needs, so an exception lets the whole app work rather than just its home page.
+const PICKS={WhatsApp:['whatsapp.com','whatsapp.net','wa.me'],Instagram:['instagram.com','cdninstagram.com'],
+Facebook:['facebook.com','facebook.net','fbcdn.net','fb.com','messenger.com'],YouTube:['youtube.com','googlevideo.com','ytimg.com','youtu.be'],
+TikTok:['tiktok.com','tiktokcdn.com','tiktokv.com','byteoversea.com'],X:['x.com','twitter.com','twimg.com','t.co'],
+Reddit:['reddit.com','redd.it','redditmedia.com','redditstatic.com'],LinkedIn:['linkedin.com','licdn.com'],
+Discord:['discord.com','discord.gg','discordapp.com','discordapp.net'],Snapchat:['snapchat.com','snap.com','sc-cdn.net']};
+function drawPicks(){picks.innerHTML=Object.keys(PICKS).map(k=>{let on=PICKS[k].every(d=>allowNow.includes(d));
+return `<button class="chip${on?' on':''}" data-k="${k}">${on?'✓ ':'+ '}${k}</button>`}).join('')}
+picks.addEventListener('click',async e=>{let k=e.target.dataset.k;if(!k)return;let on=PICKS[k].every(d=>allowNow.includes(d));
+for(let d of PICKS[k]){let r=await fetch((on?'/unallow?d=':'/allow?d=')+encodeURIComponent(d),{headers:CSRF_HDRS});if(!r.ok){alert(await r.text());break}}load()});
+function addAllow(){let d=alw.value.trim();if(d){fetch('/allow?d='+encodeURIComponent(d),{headers:CSRF_HDRS}).then(async r=>{if(r.ok)alw.value='';else alert(await r.text());load()})}}
+al.addEventListener('click',e=>{if(e.target.classList.contains('rmalw'))fetch('/unallow?d='+encodeURIComponent(e.target.dataset.d),{headers:CSRF_HDRS}).then(load)});
 function ago(t){return t<60?t+'s ago':t<3600?Math.floor(t/60)+'m ago':t<86400?Math.floor(t/3600)+'h ago':Math.floor(t/86400)+'d ago'}
 const ACTS={update:'flashing firmware',upload:'uploading a blocklist',setupdate:'changing the update URL',forgetwifi:'forgetting WiFi',phys:'turning off physical confirmation',pause:'pausing blocking'};
 function dur(s){return s<60?s+' s':s<3600?Math.round(s/60)+' min':Math.round(s/3600)+' h'}

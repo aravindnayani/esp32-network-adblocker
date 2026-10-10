@@ -20,11 +20,11 @@ The goal: a credential-free image anyone can flash from a browser, which then ca
 
 ## What needs a login
 
-Anyone on the LAN can see the dashboard and a **summary** of `/stats.json` (totals, uptime, whether blocking is on, whether a password is set). Everything else needs a login: client IPs and MACs, the custom list, the update URL, lockouts, pending approvals and the audit log. Use the **Log in** button (`/login`).
+Anyone on the LAN can see the dashboard and a **summary** of `/stats.json` (totals, uptime, whether blocking is on, whether a password is set). Everything else needs a login: client IPs and MACs, the custom list, the exceptions, the update URL, lockouts, pending approvals and the audit log. Use the **Log in** button (`/login`).
 
 These endpoints need Basic Auth (`admin` + password) **and** the custom header **and** a valid `Host`:
 
-`/ban` `/addblock` `/unblock` `/forgetwifi` `/pause` `/resume` `/upload` `/update` `/setupdate` `/fetchnow` `/confirm` `/setphys`
+`/ban` `/addblock` `/unblock` `/allow` `/unallow` `/forgetwifi` `/pause` `/resume` `/upload` `/update` `/setupdate` `/fetchnow` `/confirm` `/setphys`
 
 ## BOOT-button approvals
 
@@ -49,6 +49,8 @@ The parameter is pinned down per action:
 | `setupdate` | the exact URL |
 | `pause` | the length in seconds (`0` = forever) |
 | `upload`, `update` | `<size>:<fnv32 hex>` of the file. The device hashes the file as it arrives and rejects a mismatch before it's saved or flashed. |
+
+Picking categories under **What to block** is a new auto-update URL (one of this project's weekly lists), so it needs a press too. Adding an **exception** (a domain that's never blocked) needs only the password, like adding a custom blocked domain. Every change to either list is in the audit log.
 
 A pending request can't be replaced, even from the same IP (`409`). It has to be cancelled with `/confirm?cancel=1`, and the cancel is logged. The dashboard shows what a press would approve. A browser agent could fake what that tab shows, though, so if something looks wrong, check the audit log from another device.
 
@@ -92,7 +94,7 @@ DNS answers only come from the device's own subnet or private ranges: 10/8, 172.
 
 ## Input handling
 
-- Custom domains must be plain hostnames (labels up to 63 chars, 253 total). Anything else gets `400` with the reason.
+- Custom domains and exceptions must be plain hostnames (labels up to 63 chars, 253 total). Anything else gets `400` with the reason.
 - The update URL can't contain spaces or control characters.
 - Every string in `/stats.json` is escaped, and SSIDs and domains are HTML-escaped before they're displayed.
 - Upload auth flags are reset after every request, so one upload can't authorize the next.
@@ -108,6 +110,20 @@ DNS answers only come from the device's own subnet or private ranges: 10/8, 172.
 | Values in `secrets.h` | compiled into the firmware as written |
 
 Only **flash encryption** fully protects these from someone holding the device. It's off because it permanently burns eFuses and the browser installer can't set it up. If you build from source and want it, see Espressif's flash-encryption guide.
+
+## Setup over USB
+
+`start-here.py` sets the device up over its USB cable instead of the setup WiFi. In setup mode the firmware accepts three line commands on the USB console:
+
+| Command | Answer |
+|---|---|
+| `INFO` | mode (setup/online), IP, setup WiFi name, certificate fingerprint, whether an admin password is set |
+| `NETS` | the WiFi networks it scanned, hex-encoded (setup mode only) |
+| `PROVISION <ssid> <pass> <admin> [<current>]` | saves WiFi + admin password and restarts (setup mode only); fields are hex-encoded UTF-8 |
+
+`PROVISION` follows the setup page's rules exactly: a device that already has an admin password needs the current one unless BOOT was held at power-on, wrong guesses count towards the same 5-try limit, and it's refused once the device is online. This gives nothing away: whoever holds the USB cable can already reflash the chip or read the setup WiFi password the console prints.
+
+The helper itself listens on `127.0.0.1` only, answers only requests whose `Host` is `127.0.0.1` or `localhost` on its port (no DNS rebinding), and requires a random per-run token on every API call. The token is only in the page it serves, and the API sends no CORS headers, so other web pages can't read the token or call the API. Passwords go from the page to the device and are never written to disk or logged.
 
 ## Setup network
 

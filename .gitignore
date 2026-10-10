@@ -20,3 +20,7 @@ src/secrets.h
 
 # Flasher images are built by CI (flasher.yml); never commit them
 docs/*.bin
+
+# start-here.py: its private Python environment and downloaded images
+.setup-venv/
+.setup-cache/

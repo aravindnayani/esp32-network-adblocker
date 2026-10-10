@@ -77,7 +77,7 @@ The dashboard tells you which of these happened.
 | Who may use DNS | `-DDNS_SUBNET_ONLY` | own subnet + private ranges |
 | BOOT LED | `-DCONFIRM_LED=<gpio>`, `-DCONFIRM_LED_ON=HIGH\|LOW`, `-1` for none. Add `-DCONFIRM_LED_RGB` for an addressable (WS2812) LED. | GPIO 8 (C3), GPIO 48 RGB (S3; use `-DCONFIRM_LED=38 -DCONFIRM_LED_RGB` on DevKitC-1 v1.1), GPIO 2 (esp32dev) |
 | Hash width | `HASH_BYTES` in `main.cpp` **and** `build_blocklist.py` | 5. The two must match. |
-| Limits | `main.cpp` | 96 clients, 200 custom domains, 32 bans |
+| Limits | `main.cpp` | 96 clients, 200 custom domains, 100 exceptions, 32 bans |
 
 A custom upstream host must match its certificate, and that certificate's root CA must be in `src/ca_bundle.h`. To add a CA, edit `ROOTS` in `tools/gen_ca_bundle.py`, then run `pip install certifi && python3 tools/gen_ca_bundle.py`.
 
@@ -108,7 +108,7 @@ The S3 also uses a 4× larger lookup index (80 KB of RAM), so buckets stay small
 | Workflow | When | What |
 |---|---|---|
 | [`build.yml`](../.github/workflows/build.yml) | push to `main`, PRs | Builds `c3`, `esp32dev` + `s3`, tests the blocklist tool |
-| [`blocklist.yml`](../.github/workflows/blocklist.yml) | Mondays 04:17 UTC | Rebuilds the default list and publishes it to the `blocklist` release |
+| [`blocklist.yml`](../.github/workflows/blocklist.yml) | Mondays 04:17 UTC | Rebuilds the default list and one list per combination of categories (16 in all), and publishes them to the `blocklist` release |
 | [`flasher.yml`](../.github/workflows/flasher.yml) | push to `main` | Builds credential-free installer images, checks them, and deploys to GitHub Pages |
 
 For a fork, enable Pages once: **Settings → Pages → Source: GitHub Actions**.
@@ -122,10 +122,11 @@ src/secrets.example.h     optional settings template, copy to secrets.h
 src/ca_bundle.h           trusted root CAs (generated)
 tools/build_blocklist.py  domain lists → sorted 40-bit hash file
 tools/gen_ca_bundle.py    regenerates ca_bundle.h
-tools/test_*.py           tests for the blocklist builder
+tools/test_*.py           tests for the blocklist builder, CA bundle and setup helper
 data/                     filesystem image (blocklist.bin)
 docs/                     browser installer page (GitHub Pages)
-START-HERE.html           interactive setup guide (open from a clone)
+start-here.py             setup helper: serves START-HERE.html, flashes and provisions over USB
+START-HERE.html           setup page (served by start-here.py; opened directly, it shows how to start it)
 guide/getting-started.md  the same steps in Markdown, for maintainers
 hardware/                 printable enclosure
 ```
