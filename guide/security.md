@@ -106,7 +106,7 @@ DNS answers only come from the device's own subnet or private ranges: 10/8, 172.
 | Admin password | random salt + PBKDF2-HMAC-SHA256 (10,000 rounds). Firmware from before this change stored it in plain text; it's converted on first boot. |
 | OTA password | MD5 of the password, because espota's protocol requires it. It is **unsalted and fast to crack**, so use a long admin password or set a separate `OTA_PASS`. |
 | WiFi (WPA/WPA2) | the derived key (PMK), not your passphrase, once it has connected |
-| WiFi (WPA3-only) | the passphrase, because WPA3 needs it |
+| WiFi (WPA3-only or mixed WPA2/WPA3) | the passphrase, because WPA3 needs it. (Older firmware also swapped it for the key on mixed networks, after which the device couldn't rejoin; set it up again once after updating.) |
 | Values in `secrets.h` | compiled into the firmware as written |
 
 Only **flash encryption** fully protects these from someone holding the device. It's off because it permanently burns eFuses and the browser installer can't set it up. If you build from source and want it, see Espressif's flash-encryption guide.

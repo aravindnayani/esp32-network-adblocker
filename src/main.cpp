@@ -27,6 +27,8 @@
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/net_sockets.h"
+#include "mbedtls/error.h"        // mbedtls_strerror, for TLS failure notes
+#include "esp_heap_caps.h"
 #include "ca_bundle.h"  // trusted roots for HTTPS blocklist downloads (tools/gen_ca_bundle.py)
 #include "secrets.h"   // WIFI_SSID / WIFI_PASS — used only as a FALLBACK if no creds
                        // have been provisioned via the captive portal (copy secrets.example.h)
@@ -1776,6 +1778,18 @@ static bool sendAll(int fd, const uint8_t* p, size_t n) {
   while (n) { int r = send(fd, p, n, 0); if (r <= 0) return false; p += r; n -= r; }
   return true;
 }
+// A failed TLS setup or handshake leaves the browser with just a reset connection, so say
+// why on the console, with the memory situation (each TLS session needs ~35 KB in one piece).
+// Browsers abort a handshake on purpose until the certificate is accepted, so this is
+// rate-limited rather than silenced.
+static void tlsFailNote(const char* what, int r) {
+  static uint32_t last = 0;
+  if (last && millis() - last < 10000) return;
+  last = millis() | 1;
+  char e[96]; mbedtls_strerror(r, e, sizeof(e));
+  Serial.printf("[https] TLS %s failed: -0x%04x %s (free heap %u, largest block %u)\n", what, (unsigned)-r, e,
+                (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
 // One TLS connection: handshake, read the request head, rewrite it, relay to the dashboard.
 static void tlsServe(int fd, uint32_t peer) {
   static const size_t HEAD_MAX = 4096;
@@ -1784,10 +1798,10 @@ static void tlsServe(int fd, uint32_t peer) {
   mbedtls_ssl_context ssl; mbedtls_ssl_init(&ssl);
   int in = -1, r;
   do {
-    if (mbedtls_ssl_setup(&ssl, &tlsConf)) break;
+    if ((r = mbedtls_ssl_setup(&ssl, &tlsConf))) { tlsFailNote("setup", r); break; }   // usually out of memory
     mbedtls_ssl_set_bio(&ssl, &fd, tlsSend, tlsRecv, nullptr);
     while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {}
-    if (r) break;                                   // e.g. the browser refusing the certificate until it's accepted
+    if (r) { tlsFailNote("handshake", r); break; }  // e.g. the browser refusing the certificate until it's accepted
     size_t len = 0; int end = -1;
     while (end < 0 && len < HEAD_MAX) {
       r = mbedtls_ssl_read(&ssl, (uint8_t*)head + len, HEAD_MAX - len);
@@ -1821,7 +1835,10 @@ static void tlsServe(int fd, uint32_t peer) {
     in = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(INNER_PORT); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (in < 0 || connect(in, (sockaddr*)&a, sizeof(a))) break;
+    // Both directions time out: a send that blocks forever (the dashboard not reading while
+    // it waits to write its own reply) would wedge this task, and with it every HTTPS request.
     timeval tv = { 30, 0 }; setsockopt(in, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    timeval sv = { 10, 0 }; setsockopt(in, SOL_SOCKET, SO_SNDTIMEO, &sv, sizeof(sv));
     if (!sendAll(in, (const uint8_t*)out, o) || ((size_t)end < len && !sendAll(in, (const uint8_t*)head + end, len - end))) break;
 
     // Relay both ways until the dashboard closes its side (it always does: Connection: close).
@@ -1928,8 +1945,10 @@ static bool portalNeedsPass() { return adminSet && !portalRecovery; }
 // Once joined, swap a stored WPA/WPA2 passphrase for the key derived from it (PMK =
 // PBKDF2-HMAC-SHA1(passphrase, SSID, 4096), 64 hex digits, which ESP-IDF accepts in place of
 // the passphrase). The key still joins this network, but the passphrase, often reused for
-// other things, is no longer on the device. WPA3-only networks (SAE) need the passphrase
-// itself, so they keep it. Only NVS credentials are touched, never secrets.h.
+// other things, is no longer on the device. WPA3 needs the passphrase itself (SAE), so
+// WPA3-only and mixed WPA2/WPA3 networks keep it: on a mixed network the chip joins with
+// SAE, and handed the 64-hex key it uses it as the SAE password, so every later join failed
+// and the device fell back into setup mode. Only NVS credentials are touched, never secrets.h.
 static void protectWifiPass() {
   prefs.begin("wifi", true);
   String ss = prefs.getString("ssid", ""), pw = prefs.getString("pass", "");
@@ -1938,7 +1957,7 @@ static void protectWifiPass() {
   wifi_ap_record_t ap;
   if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return;
   if (ap.authmode != WIFI_AUTH_WPA_PSK && ap.authmode != WIFI_AUTH_WPA2_PSK &&
-      ap.authmode != WIFI_AUTH_WPA_WPA2_PSK && ap.authmode != WIFI_AUTH_WPA2_WPA3_PSK) return;
+      ap.authmode != WIFI_AUTH_WPA_WPA2_PSK) return;
   uint8_t pmk[32];
   if (!pbkdf2(MBEDTLS_MD_SHA1, (const uint8_t*)pw.c_str(), pw.length(), (const uint8_t*)ss.c_str(), ss.length(), 4096, pmk, 32)) return;
   char hex[65];
@@ -2070,9 +2089,10 @@ static void serialCommand(String line) {
   String cmd = sp < 0 ? line : line.substring(0, sp);
   String rest = sp < 0 ? String("") : line.substring(sp + 1);
   if (cmd == "INFO") {
-    Serial.printf("[info] mode=%s ip=%s ap=\"%s\" fp=%s admin=%s\n", inPortal ? "setup" : "online",
+    Serial.printf("[info] mode=%s ip=%s ap=\"%s\" fp=%s admin=%s heap=%u maxblock=%u\n", inPortal ? "setup" : "online",
                   inPortal ? "" : WiFi.localIP().toString().c_str(), setupApName().c_str(),
-                  tlsFingerprint.c_str(), adminSet ? "set" : "unset");
+                  tlsFingerprint.c_str(), adminSet ? "set" : "unset",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
   } else if (cmd == "NETS") {
     if (!inPortal) { Serial.println("[nets] error not in setup mode"); return; }
     Serial.println("[nets] " + portalNets);

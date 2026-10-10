@@ -106,7 +106,11 @@ def parse_info(line):
     m = INFO_RE.match(line)
     if not m:
         return None
-    return {'mode': m.group(1), 'ip': m.group(2), 'ap': m.group(3), 'fp': m.group(4), 'admin': m.group(5) == 'set'}
+    info = {'mode': m.group(1), 'ip': m.group(2), 'ap': m.group(3), 'fp': m.group(4), 'admin': m.group(5) == 'set'}
+    mem = re.search(r' heap=(\d+) maxblock=(\d+)', line)          # newer firmware also reports memory
+    if mem:
+        info['heap'], info['maxblock'] = int(mem.group(1)), int(mem.group(2))
+    return info
 
 
 def parse_nets(line):
@@ -532,7 +536,9 @@ class Helper:
             mon.send('INFO\n')
             info = mon.wait_for(start, parse_info, 3)
             if info:
-                job.say('✓ board is up (%s mode)' % ('setup' if info['mode'] == 'setup' else 'online'))
+                job.say('✓ board is up (%s mode)' % ('setup' if info['mode'] == 'setup' else 'online')
+                        + (', free memory %d KB, largest block %d KB' % (info['heap'] // 1024, info['maxblock'] // 1024)
+                           if 'heap' in info else ''))
                 return info
         seen = mon.lines_since(first)
         if seen:

@@ -47,6 +47,8 @@ class PureHelpers(unittest.TestCase):
         self.assertEqual(i, {'mode': 'online', 'ip': '192.168.1.50', 'ap': 'C3-AdBlock-1A2B', 'fp': 'AB:CD', 'admin': True})
         self.assertEqual(sh.parse_info('[info] mode=setup ip= ap="C3-AdBlock-1A2B" fp= admin=unset')['mode'], 'setup')
         self.assertIsNone(sh.parse_info('[setup] something else'))
+        i = sh.parse_info('[info] mode=online ip=10.0.0.2 ap="C3-AdBlock-1A2B" fp=AB admin=set heap=81234 maxblock=40000')
+        self.assertEqual((i['heap'], i['maxblock']), (81234, 40000))
 
     def test_parse_nets(self):
         line = '[nets] ' + ','.join(n.encode().hex() for n in ('Home', 'Café', 'Home', ''))
