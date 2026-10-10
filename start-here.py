@@ -113,6 +113,18 @@ def parse_info(line):
     return info
 
 
+CONSOLE_CMDS = re.compile(r'^(INFO|NETS|DIAG( on| off)?)$')
+
+
+def console_command(text):
+    """A command the page may send to the board as typed. PROVISION is not one of them:
+    passwords only go through the WiFi form."""
+    t = ' '.join(text.split())
+    if not CONSOLE_CMDS.match(t):
+        raise ValueError('only INFO, NETS, DIAG, DIAG on and DIAG off can be sent from here')
+    return t + '\n'
+
+
 def parse_nets(line):
     if not line.startswith('[nets] ') or line.startswith('[nets] error'):
         return None
@@ -675,6 +687,14 @@ def make_handler(helper, port):
                                                                 str(req.get('chip')), str(req.get('method'))))
                 if self.path == '/api/info':
                     return self.send_json(200, helper.start_job('info', helper.info, port_))
+                if self.path == '/api/send':
+                    line = console_command(str(req.get('cmd', '')))
+                    if helper.job and helper.job.state == 'running':
+                        raise RuntimeError('wait for the current step to finish')
+                    mon = helper.start_monitor(port_)
+                    if not mon.send(line):
+                        raise RuntimeError("couldn't write to the board: " + (mon.open_error or 'port not open'))
+                    return self.send_json(200, {'sent': line.strip()})
                 if self.path == '/api/nets':
                     return self.send_json(200, {'nets': helper.nets(port_)})
                 if self.path == '/api/provision':

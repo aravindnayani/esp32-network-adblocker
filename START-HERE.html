@@ -340,8 +340,14 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
 
     <details class="card" id="con-box">
       <summary>Board console</summary>
-      <p class="note">What the board prints over USB. Useful if something goes wrong.</p>
+      <p class="note">What the board prints over USB. Useful if something goes wrong. You can send it <code>INFO</code> (status), <code>NETS</code> (WiFi it can see) or <code>DIAG</code> (a health line every 2 s; <code>DIAG off</code> stops it).</p>
       <pre class="log" id="console">(nothing yet)</pre>
+      <div class="row">
+        <input class="field" id="con-cmd" style="max-width:16em;margin:0" placeholder="INFO" spellcheck="false" autocomplete="off" aria-label="Command for the board">
+        <button type="button" class="btn secondary small" id="con-send">Send</button>
+        <button type="button" class="btn secondary small" id="con-save">Save console</button>
+        <span class="note" id="con-msg"></span>
+      </div>
     </details>
   </div>
 
@@ -644,10 +650,31 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
     radios('browser', BROWSER, function (v) { choose('browser', v); });
 
     // ---- board console ----
-    setInterval(function () {
-      if (!$('con-box').open) return;
-      api('/api/console').then(function (r) { if (r.lines.length) $('console').textContent = r.lines.join('\n'); }, function () {});
-    }, 1500);
+    var conLines = [];
+    function pollConsole() {
+      api('/api/console').then(function (r) {
+        if (!r.lines.length) return;
+        conLines = r.lines;
+        var c = $('console'), atEnd = c.scrollTop + c.clientHeight >= c.scrollHeight - 4;
+        c.textContent = r.lines.join('\n'); if (atEnd) c.scrollTop = c.scrollHeight;
+      }, function () {});
+    }
+    setInterval(function () { if ($('con-box').open) pollConsole(); }, 1500);
+    function sendCmd() {
+      var cmd = $('con-cmd').value.trim().toUpperCase().replace(/^DIAG (ON|OFF)$/, function (m, a) { return 'DIAG ' + a.toLowerCase(); });
+      if (!cmd) return;
+      if (!S.port) { $('con-msg').textContent = 'Plug the board in first.'; return; }
+      api('/api/send', { port: S.port, cmd: cmd }).then(function (r) {
+        $('con-msg').textContent = 'Sent ' + r.sent + '.'; $('con-cmd').value = ''; setTimeout(pollConsole, 600);
+      }, function (e) { $('con-msg').textContent = e.message; });
+    }
+    $('con-send').addEventListener('click', sendCmd);
+    $('con-cmd').addEventListener('keydown', function (e) { if (e.key === 'Enter') sendCmd(); });
+    $('con-save').addEventListener('click', function () {
+      var url = URL.createObjectURL(new Blob([conLines.join('\n') + '\n'], { type: 'text/plain' })), a = document.createElement('a');
+      a.href = url; a.download = 'c3adblock-console.log'; document.body.appendChild(a); a.click();
+      setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+    });
 
     render();
     refreshStatus();

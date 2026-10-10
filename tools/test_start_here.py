@@ -148,6 +148,18 @@ class JobLogAndHints(unittest.TestCase):
                 self.assertFalse(sh.needs_rosetta())
 
 
+class ConsoleCommands(unittest.TestCase):
+    def test_allowed(self):
+        self.assertEqual(sh.console_command(' INFO '), 'INFO\n')
+        self.assertEqual(sh.console_command('DIAG  on'), 'DIAG on\n')
+        self.assertEqual(sh.console_command('NETS'), 'NETS\n')
+
+    def test_refused(self):
+        for bad in ('PROVISION 41 - 61', 'info', 'DIAG maybe', 'INFO\nPROVISION 41 - 61', ''):
+            with self.assertRaises(ValueError, msg=bad):
+                sh.console_command(bad)
+
+
 class HttpGuard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

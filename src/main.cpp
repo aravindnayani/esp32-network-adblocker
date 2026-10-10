@@ -56,6 +56,13 @@ static const int CACHE_SIZE = 256;       // must be power of 2
 static const int MAX_RANGE = 256;        // max hashes per index bucket
 
 // ---- globals ----
+// Health markers, read by healthTask (see "health" below). Written without locks: each is
+// one aligned word, and a stale read only makes a diagnostic line a moment out of date.
+volatile uint32_t loopBeat = 0, dnsBeat = 0;            // millis() when loop() / dnsTask last ran
+volatile uint8_t  relayStage = 0;                       // what tlsTask is doing (RELAY_STAGES)
+volatile uint32_t relayStageSince = 0;
+static const char* const RELAY_STAGES[] = { "idle", "handshake", "read-request", "connect-inner", "send-inner", "relay", "close" };
+static inline void relayAt(uint8_t st) { relayStage = st; relayStageSince = millis(); }
 // The dashboard's WebServer listens on loopback only. Browsers reach it through the TLS
 // front end on :443 (see "HTTPS"), which relays each decrypted request here; :80 only
 // redirects to https. The setup portal has its own plain-HTTP server on the WPA2 setup AP.
@@ -890,6 +897,7 @@ static void dnsTask(void*) {
     dotPump();
 #endif
     expirePending();
+    dnsBeat = millis();
   }
 }
 static bool startDns() {
@@ -1798,10 +1806,12 @@ static void tlsServe(int fd, uint32_t peer) {
   mbedtls_ssl_context ssl; mbedtls_ssl_init(&ssl);
   int in = -1, r;
   do {
+    relayAt(1);
     if ((r = mbedtls_ssl_setup(&ssl, &tlsConf))) { tlsFailNote("setup", r); break; }   // usually out of memory
     mbedtls_ssl_set_bio(&ssl, &fd, tlsSend, tlsRecv, nullptr);
     while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {}
     if (r) { tlsFailNote("handshake", r); break; }  // e.g. the browser refusing the certificate until it's accepted
+    relayAt(2);
     size_t len = 0; int end = -1;
     while (end < 0 && len < HEAD_MAX) {
       r = mbedtls_ssl_read(&ssl, (uint8_t*)head + len, HEAD_MAX - len);
@@ -1832,6 +1842,7 @@ static void tlsServe(int fd, uint32_t peer) {
     }
     memcpy(out + o, "\r\n", 2); o += 2;
 
+    relayAt(3);
     in = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(INNER_PORT); a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (in < 0 || connect(in, (sockaddr*)&a, sizeof(a))) break;
@@ -1839,8 +1850,10 @@ static void tlsServe(int fd, uint32_t peer) {
     // it waits to write its own reply) would wedge this task, and with it every HTTPS request.
     timeval tv = { 30, 0 }; setsockopt(in, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     timeval sv = { 10, 0 }; setsockopt(in, SOL_SOCKET, SO_SNDTIMEO, &sv, sizeof(sv));
+    relayAt(4);
     if (!sendAll(in, (const uint8_t*)out, o) || ((size_t)end < len && !sendAll(in, (const uint8_t*)head + end, len - end))) break;
 
+    relayAt(5);
     // Relay both ways until the dashboard closes its side (it always does: Connection: close).
     bool browserOpen = true; uint32_t idle = millis();
     for (;;) {
@@ -1862,6 +1875,7 @@ static void tlsServe(int fd, uint32_t peer) {
         idle = millis();
       }
     }
+    relayAt(6);
     mbedtls_ssl_close_notify(&ssl);
   } while (false);
   if (in >= 0) close(in);
@@ -1877,6 +1891,7 @@ static void tlsTask(void* arg) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     tlsServe(fd, from.sin_addr.s_addr);
     close(fd);
+    relayAt(0);
   }
 }
 static bool startHttps() {
@@ -2083,6 +2098,44 @@ static String hexEncode(const String& s) {
   for (unsigned i = 0; i < s.length(); i++) { uint8_t c = s[i]; out += H[c >> 4]; out += H[c & 15]; }
   return out;
 }
+// ---------- health ----------
+// A separate task on the app core prints one [health] line: every 2 s after DIAG on, and on
+// its own (at most every 10 s) whenever something looks wrong: the HTTPS relay stuck in one
+// stage, loop() or the DNS task not running, or memory running out. It keeps working when
+// the network side is wedged, which is exactly when the console would otherwise go quiet.
+static volatile bool diagOn = false;
+static void healthLine(const char* why) {
+  uint32_t now = millis();
+  Serial.printf("[health] %s up=%lus heap=%u min=%u maxblock=%u loop=%lums dns=%lums relay=%s/%lus wifi=%d rssi=%d\n",
+                why, (unsigned long)(now / 1000), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                (unsigned long)(loopBeat ? now - loopBeat : 0), (unsigned long)(dnsBeat ? now - dnsBeat : 0),
+                RELAY_STAGES[relayStage < 7 ? relayStage : 0], (unsigned long)((now - relayStageSince) / 1000),
+                (int)WiFi.status(), (int)WiFi.RSSI());
+}
+static void healthTask(void*) {
+  uint32_t lastAuto = 0;
+  for (;;) {
+    delay(2000);
+    if (!loopBeat) continue;                                   // still booting
+    uint32_t now = millis();
+    const char* why = nullptr;
+    if (relayStage && now - relayStageSince > 15000) why = "relay-stuck";
+    else if (now - loopBeat > 5000) why = "loop-stuck";
+    else if (dnsBeat && now - dnsBeat > 5000) why = "dns-stuck";
+    else if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < 12000) why = "low-memory";
+    if (why && (!lastAuto || now - lastAuto >= 10000)) { lastAuto = now; healthLine(why); }
+    else if (diagOn) healthLine("diag");
+  }
+}
+static void startHealth() {
+#if CONFIG_FREERTOS_UNICORE
+  xTaskCreate(healthTask, "health", 3072, nullptr, 5, nullptr);
+#else
+  xTaskCreatePinnedToCore(healthTask, "health", 3072, nullptr, 5, nullptr, 1);   // away from WiFi/lwIP on core 0
+#endif
+}
+
 static void serialCommand(String line) {
   line.trim();
   int sp = line.indexOf(' ');
@@ -2112,8 +2165,12 @@ static void serialCommand(String line) {
     if (code != 200) { Serial.printf("[provision] error %d %s\n", code, err.c_str()); return; }
     Serial.printf("[provision] ok, restarting to join \"%s\"\n", ss.c_str());
     Serial.flush(); delay(500); ESP.restart();
+  } else if (cmd == "DIAG") {
+    diagOn = rest != "off";
+    Serial.printf("[diag] %s\n", diagOn ? "on: a [health] line every 2 s (DIAG off to stop)" : "off");
+    if (diagOn) healthLine("now");
   } else if (cmd.length()) {
-    Serial.printf("[cmd] unknown command %s (INFO, NETS, PROVISION)\n", cmd.c_str());
+    Serial.printf("[cmd] unknown command %s (INFO, NETS, PROVISION, DIAG)\n", cmd.c_str());
   }
 }
 static void pollSerial() {
@@ -2198,6 +2255,7 @@ void setup() {
     Serial.println("[WARN] no admin password set: settings, uploads and OTA are locked. "
                    "Hold BOOT while powering on to run setup and choose one.");
 
+  startHealth();
   if (!startDns()) Serial.println("[dns] FAILED to start");
   { const char* hdrs[] = { CSRF_HEADER, PEER_HEADER }; web.collectHeaders(hdrs, 2); }  // CSRF check + client address
   web.on("/", []() { if (requireHost()) web.send_P(200, "text/html", PAGE); });
@@ -2276,6 +2334,7 @@ void setup() {
 }
 
 void loop() {
+  loopBeat = millis();
   confirmLoop();
   pollSerial();                           // INFO over USB (start-here.py finds the IP this way)
   // With physical confirmation on, espota only gets an answer for a minute after a BOOT
