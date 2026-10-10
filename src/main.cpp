@@ -976,12 +976,15 @@ static uint32_t clientIp() {             // 0 = not relayed by the front end
 // LAN IP. Its fetch() is then "same-origin", so it can set the CSRF header above and
 // read /stats.json. The browser still sends Host: evil.example, so only answer requests
 // addressed to a name or IP that really is this device.
-static bool hostOk() {
-  if (!clientIp()) return false;
-  String h = web.hostHeader(); h.toLowerCase();
+static bool hostAllowed(String h) {
+  h.trim(); h.toLowerCase();
   int colon = h.indexOf(':'); if (colon >= 0) h = h.substring(0, colon);
   if (h.endsWith(".")) h.remove(h.length() - 1);
   return h == "c3adblock.local" || h == "c3adblock" || h == WiFi.localIP().toString();
+}
+static bool hostOk() {
+  if (!clientIp()) return false;
+  return hostAllowed(web.hostHeader());
 }
 static bool requireHost() {
   if (hostOk()) return true;
@@ -1798,6 +1801,43 @@ static void tlsFailNote(const char* what, int r) {
   Serial.printf("[https] TLS %s failed: -0x%04x %s (free heap %u, largest block %u)\n", what, (unsigned)-r, e,
                 (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
+// Answer GET / (the dashboard page) and /favicon.ico without the inner WebServer. Returns
+// true if it answered. Same Host rule as hostOk().
+static bool tlsServeStatic(mbedtls_ssl_context* ssl, const char* head, int end) {
+  bool page = !strncmp(head, "GET / ", 6) || !strncmp(head, "GET /? ", 7) || !strncmp(head, "GET /index.html ", 16);
+  bool icon = !strncmp(head, "GET /favicon.ico ", 17);
+  if (!page && !icon) return false;
+  String host;
+  for (const char* l = strstr(head, "\r\n"); l && l + 2 < head + end; l = strstr(l + 2, "\r\n")) {
+    if (!strncasecmp(l + 2, "Host:", 5)) {
+      const char* e = strstr(l + 2, "\r\n");
+      host = String(l + 7).substring(0, e - (l + 7));
+      break;
+    }
+  }
+  char hdr[200];
+  if (!hostAllowed(host)) {
+    static const char BAD[] = "bad Host header (use https://c3adblock.local or the device IP)";
+    int n = snprintf(hdr, sizeof(hdr), "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
+                     (unsigned)(sizeof(BAD) - 1));
+    if (tlsWriteAll(ssl, (const uint8_t*)hdr, n)) tlsWriteAll(ssl, (const uint8_t*)BAD, sizeof(BAD) - 1);
+    return true;
+  }
+  if (icon) {
+    static const char NONE[] = "HTTP/1.1 204 No Content\r\nCache-Control: max-age=86400\r\nConnection: close\r\n\r\n";
+    tlsWriteAll(ssl, (const uint8_t*)NONE, sizeof(NONE) - 1);
+    return true;
+  }
+  size_t len = strlen_P(PAGE);
+  int n = snprintf(hdr, sizeof(hdr), "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %u\r\n"
+                   "Cache-Control: no-store\r\nConnection: close\r\n\r\n", (unsigned)len);
+  if (!tlsWriteAll(ssl, (const uint8_t*)hdr, n)) return true;
+  // PAGE sits in memory-mapped flash; 4 KB records keep each write well inside the TLS buffer.
+  for (size_t off = 0; off < len; off += 4096)
+    if (!tlsWriteAll(ssl, (const uint8_t*)PAGE + off, min((size_t)4096, len - off))) break;
+  return true;
+}
+
 // One TLS connection: handshake, read the request head, rewrite it, relay to the dashboard.
 static void tlsServe(int fd, uint32_t peer) {
   static const size_t HEAD_MAX = 4096;
@@ -1828,6 +1868,12 @@ static void tlsServe(int fd, uint32_t peer) {
       }
       break;
     }
+    // The dashboard page (~25 KB) is answered here, straight from flash, instead of crossing
+    // the loopback hop to the WebServer. That hop copies every chunk into short-lived ~1.5 KB
+    // buffers on both sides; on the classic ESP32, with ~100 KB free, it shattered the heap
+    // until no block could hold one network packet and the device dropped off the network.
+    if (tlsServeStatic(&ssl, head, end)) { relayAt(6); mbedtls_ssl_close_notify(&ssl); break; }
+
     // Request line, then our headers, then the browser's minus any X-C3-Peer / Connection.
     const char* first = strstr(head, "\r\n");
     size_t o = first - head + 2;
