@@ -125,6 +125,8 @@ tools/gen_ca_bundle.py    regenerates ca_bundle.h
 tools/test_*.py           tests for the blocklist builder
 data/                     filesystem image (blocklist.bin)
 docs/                     browser installer page (GitHub Pages)
+START-HERE.html           interactive setup guide (open from a clone)
+guide/getting-started.md  the same steps in Markdown, for maintainers
 hardware/                 printable enclosure
 ```
 

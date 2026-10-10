@@ -24,6 +24,7 @@
   esp-web-install-button[install-unsupported] { display: none; }
   .unsupported { display: none; color: #f85149; }
   esp-web-install-button[install-unsupported] ~ .unsupported { display: block; }
+  .no-serial { color: #f0b72f; text-align: left; margin: 0; }
   a { color: #58a6ff; }
   .note { color: #8b949e; font-size: 14px; }
   code { background: #21262d; padding: 1px 6px; border-radius: 5px; }
@@ -40,11 +41,18 @@
     <p style="margin-top:0">Plug your ESP32-C3 (4 MB flash) or ESP32-S3 (8 MB+ flash) into this computer, then:</p>
     <esp-web-install-button manifest="./manifest.json">
       <button slot="activate" style="font:600 17px system-ui;padding:14px 26px;border:0;border-radius:8px;background:#3fb950;color:#000;cursor:pointer">⚡ Connect &amp; Install</button>
-      <span slot="unsupported" class="unsupported">Your browser can't flash — use <b>Chrome</b> or <b>Edge</b> on a desktop.</span>
+      <span slot="unsupported"></span>
       <span slot="not-allowed" class="unsupported">You need to allow the serial port.</span>
     </esp-web-install-button>
+    <!-- Outside the button on purpose: an unsupported install button is hidden entirely. -->
+    <p class="no-serial" id="no-serial" hidden>This browser can't flash over USB. On <b>Safari</b> or <b>Firefox</b>, flash with esptool instead:
+      download <a href="./adblock-c3.bin">adblock-c3.bin</a> or <a href="./adblock-s3.bin">adblock-s3.bin</a>
+      (<a href="./SHA256SUMS">checksums</a>) and follow <code>START-HERE.html</code> in the
+      <a href="https://github.com/aravindnayani/esp32-network-adblocker">repository</a>. Or open this page in Chrome or Edge on a desktop.</p>
+    <script>if (!('serial' in navigator)) document.getElementById('no-serial').hidden = false;</script>
     <div class="flags">
-      <span class="flag">Chrome / Edge · desktop</span>
+      <span class="flag">Chrome / Edge: in the browser</span>
+      <span class="flag">Safari / Firefox: via esptool</span>
       <span class="flag">~30 seconds</span>
       <span class="flag">blocklist included</span>
     </div>

@@ -81,6 +81,16 @@ jobs:
           cp ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin "$out/"
           version="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
           jq --arg v "$version" '.version = $v' docs/manifest.json > "$out/manifest.json"
+          # One merged image per chip for browsers without Web Serial (Safari, Firefox):
+          # START-HERE.html has them flashed with `esptool write-flash 0x0 adblock-<chip>.bin`.
+          # Offsets come from the manifest so the two install routes can't drift apart.
+          esptool=~/.platformio/packages/tool-esptoolpy/esptool.py
+          for chip in c3 s3; do
+            mapfile -t parts < <(jq -r --arg c "ESP32-${chip^^}" \
+              '.builds[] | select(.chipFamily==$c) | .parts[] | "\(.offset)\n\(.path)"' "$out/manifest.json")
+            (cd "$out" && python3 "$esptool" --chip "esp32$chip" merge_bin -o "adblock-$chip.bin" "${parts[@]}")
+          done
+          (cd "$out" && sha256sum adblock-c3.bin adblock-s3.bin > SHA256SUMS)
           ls -l "$out"
 
       - name: Sanity checks
@@ -101,6 +111,10 @@ jobs:
           test "$(part ESP32-S3 s3/littlefs.bin)" -eq "$(off partitions-s3-8mb.csv spiffs)"
           # Every file the manifest names must be in the site.
           for f in $(jq -r '.builds[].parts[].path' site/manifest.json); do test -f "site/$f" || { echo "missing site/$f"; exit 1; }; done
+          # Merged images must reach past the blocklist offset and match their checksums.
+          test "$(stat -c %s site/adblock-c3.bin)" -gt "$(part ESP32-C3 littlefs.bin)"
+          test "$(stat -c %s site/adblock-s3.bin)" -gt "$(part ESP32-S3 s3/littlefs.bin)"
+          (cd site && sha256sum -c SHA256SUMS)
           # The page must load the self-hosted installer, never a CDN copy.
           test -f site/esp-web-tools/install-button.js
           if grep -qE '<script[^>]+src="https?://' site/index.html; then echo "index.html loads a remote script"; exit 1; fi

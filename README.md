@@ -18,23 +18,28 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 
 ---
 
-## Get started in 5 minutes
+## Get started
 
-**You need:** one of the boards below, a USB cable, and Chrome or Edge on a computer.
+**You need:** one of the boards below, a USB cable, and a computer with Chrome, Edge, Safari or Firefox.
 
-| Board | Price | Blocklist room | Browser installer |
+| Board | Price | Blocklist room | Prebuilt image |
 |---|---|---|---|
 | **ESP32-C3**, 4 MB flash (e.g. C3 SuperMini) — *recommended* | ~$2 | ~250k domains | ✅ |
 | **ESP32-S3**, 8 MB+ flash (e.g. S3 DevKitC-1 N8/N16) | ~$5–10 | ~1M domains | ✅ |
 | Classic **ESP32**, 4 MB (DevKit / WROOM) | ~$3–5 | ~250k domains | build from source |
 
-The C3 is plenty for the default ~100k-domain list. Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi). On an S3 board with two USB ports, plug into the one labelled **USB**, not **UART**, or the setup password won't show up in the console.
+The C3 is plenty for the default ~100k-domain list. Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi).
 
-1. **Flash it.** Open the [web installer](https://aravindnayani.github.io/esp32-network-adblocker/), plug in the board, and click **⚡ Connect & Install**. It detects whether you have a C3 or an S3 and flashes the right image. It takes about 30 seconds.
-2. **Get the setup password.** In the installer, open **Logs & Console**. The device prints the password for its setup WiFi there. Write it down.
-3. **Join the setup WiFi** `C3-AdBlock-XXXX` from your phone with that password. A setup page opens.
-4. **Fill in three things:** your home WiFi, its password, and a new admin password (8+ characters). Tap **Connect**.
-5. **Open the dashboard** at **https://c3adblock.local**. Your browser will warn about the certificate. That's expected, because the device signs its own. Check that the fingerprint matches the one on the setup page, then accept.
+### ▶ Open [`START-HERE.html`](START-HERE.html)
+
+Clone or download this repository and open **`START-HERE.html`** in your browser. Pick your board, install method, computer and browser, and it shows exactly the steps you need, from flashing to the dashboard, with commands you can copy:
+
+```bash
+git clone https://github.com/aravindnayani/esp32-network-adblocker
+open esp32-network-adblocker/START-HERE.html     # Windows: start …, Linux: xdg-open …
+```
+
+Chrome and Edge flash straight from the [web installer](https://aravindnayani.github.io/esp32-network-adblocker/). Safari and Firefox can't talk to USB devices, so the page walks you through three `esptool` commands instead. It works offline, and nothing you type into it leaves the page.
 
 ### Turn it on for your network
 
@@ -102,7 +107,7 @@ A small index in RAM points each lookup to a single flash read. Blocking `exampl
 
 ## Building it yourself
 
-If you'd rather compile than use the browser installer:
+Choose **Build from source** in [`START-HERE.html`](START-HERE.html): it fills in `src/secrets.h` for you and gives the PlatformIO commands for your board. In short:
 
 ```bash
 pip install -U platformio
@@ -119,7 +124,7 @@ After that, firmware and blocklists update over WiFi.
 
 ## Hardware tips
 
-- **Board:** see the [table above](#get-started-in-5-minutes). The C3 is the main tested target. The classic ESP32 is community-contributed and compile-tested.
+- **Board:** see the [table above](#get-started). The C3 is the main tested target. The classic ESP32 is community-contributed and compile-tested.
 - **BOOT LED:** blinks when an action waits for your press. It's the blue LED on a C3 SuperMini and the RGB LED on an S3 DevKitC-1. On a DevKitC-1 v1.1 the RGB LED moved to GPIO 38, so build with `-DCONFIRM_LED=38 -DCONFIRM_LED_RGB`.
 - **Power:** use a solid USB source. A router's USB port plus a USB-A→C adapter works well. Cheap adapters can cause dropouts.
 - **Case:** a printable C3 SuperMini enclosure is in [`hardware/`](hardware/esp32-c3-supermini-enclosure.stl). Keep the antenna end (opposite the USB port) clear of plastic and metal.
