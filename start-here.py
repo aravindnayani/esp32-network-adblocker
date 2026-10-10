@@ -166,6 +166,7 @@ class Monitor:
     def __init__(self, port):
         self.port, self.lines, self.cv = port, [], threading.Condition()
         self.ser, self.stop_flag = None, False
+        self.open_error = ''                              # why the port last failed to open, if it did
         self.t = threading.Thread(target=self.run, daemon=True)
         self.t.start()
 
@@ -177,11 +178,13 @@ class Monitor:
                 try:
                     s = serial.Serial()
                     s.port, s.baudrate, s.timeout = self.port, 115200, 0.2
+                    s.write_timeout = 2              # a stuck board must not hang the helper
                     s.dtr = False                  # don't hold the chip in reset / download mode
                     s.rts = False
                     s.open()
-                    self.ser = s
-                except Exception:
+                    self.ser, self.open_error = s, ''
+                except Exception as e:
+                    self.open_error = str(e) or e.__class__.__name__
                     time.sleep(0.5)
                     continue
             try:
@@ -208,8 +211,7 @@ class Monitor:
         for _ in range(40):
             if self.ser is not None:
                 try:
-                    self.ser.write(text.encode('utf-8'))
-                    self.ser.flush()
+                    self.ser.write(text.encode('utf-8'))   # no flush(): tcdrain() can block forever
                     return True
                 except Exception:
                     pass
@@ -236,6 +238,10 @@ class Monitor:
                     return None
                 self.cv.wait(min(left, 0.5))
                 i = min(i, len(self.lines))
+
+    def lines_since(self, start):
+        with self.cv:
+            return list(self.lines[start:])
 
     def tail(self, n=60):
         with self.cv:
@@ -315,6 +321,28 @@ def needs_rosetta():
                                stderr=subprocess.DEVNULL) != 0
     except OSError:
         return True
+
+
+CRASH_RE = re.compile(r'Guru Meditation|Backtrace:|abort\(\) was called|Brownout detector|rst:0x[0-9a-f]+ \((?!POWERON)', re.I)
+
+
+def no_answer_reason(port, opened, open_error, seen, timeout):
+    """Why INFO got no answer, from what the port and the board did meanwhile."""
+    if not opened:
+        why = 'couldn\'t open %s' % port + (': ' + open_error if open_error else '')
+        if re.search(r'busy|in use|errno 16|access is denied', open_error or '', re.I):
+            return why + '. Another program is using the board: close any serial monitor, Arduino IDE or flasher, then try again.'
+        if re.search(r'permission', open_error or '', re.I):
+            return why + '. On Linux, run: sudo usermod -aG dialout $USER, then log out and back in.'
+        return why + '. Unplug the board, plug it back in, and try again.'
+    if not seen:
+        return ('the board sent nothing over USB in %d s. Check it is powered and that %s is really the board '
+                '(pick another port in step 1 if there are several), then unplug it, plug it back in and try again.' % (timeout, port))
+    if sum(1 for l in seen if CRASH_RE.search(l)) >= 2:
+        return ('the board keeps crashing and restarting (see what it printed in Details). Press Install in step 3 '
+                'to put fresh firmware on it.')
+    return ('the board is running, but its firmware doesn\'t answer setup commands: it is probably an older version '
+            'of the ad-blocker, or other firmware. Press Install in step 3 to update it (this erases it).')
 
 
 def explain_failure(log):
@@ -496,7 +524,9 @@ class Helper:
 
     def read_info(self, job, port, timeout):
         mon = self.start_monitor(port)
+        first = mon.mark()
         end = time.time() + timeout
+        job.say('asking the board for its status on %s (up to %d s)' % (port, timeout))
         while time.time() < end:
             start = mon.mark()
             mon.send('INFO\n')
@@ -504,11 +534,17 @@ class Helper:
             if info:
                 job.say('✓ board is up (%s mode)' % ('setup' if info['mode'] == 'setup' else 'online'))
                 return info
-        raise RuntimeError("the board didn't answer over USB. Unplug it, plug it back in, and press Check again.")
+        seen = mon.lines_since(first)
+        if seen:
+            job.say('--- what the board printed (%d lines) ---' % len(seen))
+            for l in seen[-80:]:
+                job.say('  ' + l)
+            job.say('--- end ---')
+        raise RuntimeError(no_answer_reason(port, mon.ser is not None, mon.open_error, seen, timeout))
 
     def info(self, job, port):
         job.step = 'Asking the board for its status'
-        return self.read_info(job, port, 15)
+        return self.read_info(job, port, 25)
 
     def nets(self, port):
         mon = self.start_monitor(port)

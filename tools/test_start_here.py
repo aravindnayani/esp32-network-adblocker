@@ -301,5 +301,74 @@ class Provisioning(unittest.TestCase):
         self.assertIn("couldn't join", v['error'])
 
 
+class NoAnswerReasons(unittest.TestCase):
+    def test_port_busy(self):
+        r = sh.no_answer_reason('/dev/x', False, '[Errno 16] could not open port /dev/x: Resource busy', [], 25)
+        self.assertIn('Another program is using the board', r)
+
+    def test_silent(self):
+        self.assertIn('sent nothing', sh.no_answer_reason('/dev/x', True, '', [], 25))
+
+    def test_old_firmware(self):
+        r = sh.no_answer_reason('/dev/x', True, '', ['[c3-adblock] booting', 'blocklist: 104381 domains'], 25)
+        self.assertIn('older version', r)
+
+    def test_crash_loop(self):
+        seen = ['rst:0xc (SW_CPU_RESET),boot:0x13', 'Guru Meditation Error: Core 0 panic', 'Backtrace: 0x4008',
+                'rst:0xc (SW_CPU_RESET),boot:0x13']
+        self.assertIn('keeps crashing', sh.no_answer_reason('/dev/x', True, '', seen, 25))
+        # A normal power-on reset line alone is not a crash.
+        self.assertIn('older version', sh.no_answer_reason('/dev/x', True, '', ['rst:0x1 (POWERON_RESET),boot:0x13'], 25))
+
+
+class Chatter(threading.Thread):
+    """A board that prints lines but never answers INFO (older firmware)."""
+
+    def __init__(self, master, lines):
+        super().__init__(daemon=True)
+        self.master, self.lines = master, lines
+
+    def run(self):
+        for l in self.lines:
+            try:
+                os.write(self.master, (l + '\r\n').encode())
+            except OSError:
+                return
+            threading.Event().wait(0.1)
+
+
+@unittest.skipUnless(HAVE_SERIAL and os.name == 'posix', 'needs pyserial and a POSIX pty')
+class NoAnswerOnPty(unittest.TestCase):
+    def setUp(self):
+        import pty
+        self.master, slave = pty.openpty()
+        self.addCleanup(os.close, self.master)
+        self.addCleanup(os.close, slave)
+        self.port = os.ttyname(slave)
+        self.helper = sh.Helper()
+        self.addCleanup(self.helper.stop_monitor)
+        self._cache = sh.CACHE
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        sh.CACHE = d.name
+        self.addCleanup(setattr, sh, 'CACHE', self._cache)
+
+    def test_old_firmware_console_lands_in_log(self):
+        Chatter(self.master, ['[c3-adblock] booting', 'blocklist: 104381 domains', 'WiFi up: 192.168.1.9']).start()
+        job = sh.Job('info')
+        with self.assertRaises(RuntimeError) as e:
+            self.helper.read_info(job, self.port, 4)
+        self.assertIn('older version', str(e.exception))
+        self.assertIn('  blocklist: 104381 domains', job.log)       # Details shows what the board printed
+        job.close()
+
+    def test_silent_board(self):
+        job = sh.Job('info')
+        with self.assertRaises(RuntimeError) as e:
+            self.helper.read_info(job, self.port, 3)
+        self.assertIn('sent nothing', str(e.exception))
+        job.close()
+
+
 if __name__ == '__main__':
     unittest.main()

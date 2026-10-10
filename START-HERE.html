@@ -280,6 +280,7 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
     <section class="card step locked" id="st-dash">
       <div class="step-head"><span class="num">5</span><h2>Open the dashboard and finish setting up</h2></div>
       <div class="step-body">
+        <div class="callout info"><b>Keep the board plugged into this computer for now.</b> It's already on your WiFi; the cable only powers it, and the helper can show what it prints if something goes wrong. Move it next to your router after this step (see step 6). You don't need the board's own setup WiFi or <code>192.168.4.1</code>: that's only for setting it up from a phone.</div>
         <dl class="kv">
           <dt>Address</dt><dd><a class="big-link" href="https://c3adblock.local" target="_blank" rel="noopener">https://c3adblock.local</a></dd>
           <dt>Or by IP</dt><dd><a id="d-ip" target="_blank" rel="noopener"></a></dd>
@@ -328,7 +329,12 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
           <li><b>New router or WiFi password:</b> on the dashboard, <b>Forget WiFi</b>, then plug the board into this computer and run <code>start-here.py</code> again.</li>
           <li><b>Lost the admin password:</b> hold <b>BOOT</b> while plugging the board in, then run <code>start-here.py</code> again.</li>
         </ul>
-        <p class="note">You're done with the helper: press <b>Ctrl+C</b> in the terminal and unplug the board. Plug it into your router's USB port or any USB charger near the router.</p>
+        <h3>Move the board to its permanent place</h3>
+        <ol>
+          <li>Press <b>Ctrl+C</b> in the terminal to stop the helper, then unplug the board from this computer.</li>
+          <li>Plug it into your router's USB port, or any USB charger near the router. It keeps all its settings and rejoins your WiFi by itself in about 30 seconds.</li>
+          <li>Open <a href="https://c3adblock.local" target="_blank" rel="noopener">https://c3adblock.local</a> again. If it loads, you're done. If your router gave it a new address, update the DNS setting in your router (reserving its address prevents this).</li>
+        </ol>
       </div>
     </section>
 
