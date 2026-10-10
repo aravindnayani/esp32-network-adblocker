@@ -253,20 +253,80 @@ class Monitor:
 
 # ---------------------------------------------------------------- jobs
 
+LOG_MAX = 50000                         # lines kept in memory per step; the log file has everything
+
+
 class Job:
+    """One step's state and its full log, which also goes to .setup-cache/logs/ as it's written.
+    The page fetches the log incrementally (view(since)), so long builds come through whole."""
+
     def __init__(self, kind):
         self.kind, self.state, self.step, self.log, self.result, self.error = kind, 'running', '', [], None, ''
+        self.dropped = 0                                   # lines trimmed from the front of self.log
         self.lock = threading.Lock()
+        self.logfile = None
+        try:
+            os.makedirs(os.path.join(CACHE, 'logs'), exist_ok=True)
+            self.logfile = os.path.join(CACHE, 'logs', time.strftime('%Y%m%d-%H%M%S-') + kind + '.log')
+            self.fh = open(self.logfile, 'w', encoding='utf-8')
+        except OSError:
+            self.logfile, self.fh = None, None
 
     def say(self, line):
         with self.lock:
             self.log.append(line)
-            del self.log[:-300]
+            if len(self.log) > LOG_MAX:
+                cut = len(self.log) - LOG_MAX
+                del self.log[:cut]
+                self.dropped += cut
+            if self.fh:
+                self.fh.write(line + '\n')
+                self.fh.flush()
 
-    def view(self):
+    def close(self):
         with self.lock:
-            return {'kind': self.kind, 'state': self.state, 'step': self.step, 'log': self.log[-120:],
+            if self.fh:
+                self.fh.close()
+                self.fh = None
+
+    def view(self, since=0):
+        """State plus log lines from absolute line number `since` on."""
+        with self.lock:
+            start = max(since - self.dropped, 0)
+            return {'kind': self.kind, 'state': self.state, 'step': self.step,
+                    'log': self.log[start:], 'logFrom': self.dropped + start,
+                    'logTotal': self.dropped + len(self.log), 'logFile': self.logfile,
                     'result': self.result, 'error': self.error}
+
+
+ROSETTA_CMD = 'softwareupdate --install-rosetta --agree-to-license'
+ROSETTA_MSG = ("building from source on this Mac needs Rosetta 2: some of the pinned PlatformIO tools "
+               "(the ESP32-C3 compiler and mklittlefs) only come as Intel programs. Install it by running "
+               "this in Terminal, then press Install again:  " + ROSETTA_CMD +
+               "   Or choose the prebuilt image, which needs nothing extra.")
+
+
+def needs_rosetta():
+    """True on an Apple Silicon Mac that can't run Intel programs; False everywhere else."""
+    if sys.platform != 'darwin' or platform.machine() != 'arm64':
+        return False
+    try:
+        return subprocess.call(['arch', '-x86_64', '/usr/bin/true'], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL) != 0
+    except OSError:
+        return True
+
+
+def explain_failure(log):
+    """A plain-language cause for known build failures, or ''."""
+    text = '\n'.join(log[-400:])
+    if 'Bad CPU type in executable' in text:
+        return ROSETTA_MSG
+    if 'Permission denied' in text and ('/dev/tty' in text or 'could not open port' in text.lower()):
+        return "this computer won't let the helper open the USB port. On Linux, run: sudo usermod -aG dialout $USER, then log out and back in."
+    if 'could not open port' in text.lower() or 'Resource busy' in text:
+        return 'the USB port is in use. Close any other program using the board (serial monitor, Arduino IDE, another browser tab), then try again.'
+    return ''
 
 
 class Helper:
@@ -290,9 +350,9 @@ class Helper:
         pio = os.path.join(os.path.dirname(venv_python()), 'pio.exe' if os.name == 'nt' else 'pio')
         return {'python': platform.python_version(), 'esptool': getattr(esptool, '__version__', '?'),
                 'pio': os.path.exists(pio), 'os': {'darwin': 'mac', 'win32': 'win'}.get(sys.platform, 'linux'),
-                'repo': HERE, 'ports': ports, 'job': self.job.view() if self.job else None,
+                'repo': HERE, 'ports': ports, 'job': self.job.state if self.job else None,
                 'monitor': self.monitor.port if self.monitor else None,
-                'linuxGroups': self.linux_serial_hint()}
+                'linuxGroups': self.linux_serial_hint(), 'rosetta': {'needed': needs_rosetta(), 'cmd': ROSETTA_CMD}}
 
     @staticmethod
     def linux_serial_hint():
@@ -344,8 +404,14 @@ class Helper:
                 job.result = fn(job, *args)
                 job.state = 'ok'
             except Exception as e:
-                job.error, job.state = str(e), 'error'
+                why = explain_failure(job.log)
+                job.error = why if why and why not in str(e) else str(e)
                 job.say('✗ ' + str(e))
+                if why and why != str(e):
+                    job.say('  likely cause: ' + why)
+                job.state = 'error'
+            finally:
+                job.close()
         threading.Thread(target=go, daemon=True).start()
         return job.view()
 
@@ -401,6 +467,8 @@ class Helper:
         return self.read_info(job, port, 40)    # first boot makes the TLS key: allow time
 
     def build_and_flash(self, job, port, chip):
+        if needs_rosetta():                              # fail now, not after minutes of downloads
+            raise RuntimeError(ROSETTA_MSG)
         env = dict(os.environ)
         import certifi
         env['SSL_CERT_FILE'] = certifi.where()           # python.org Python on macOS has no roots
@@ -544,8 +612,9 @@ def make_handler(helper, port):
                 return self.wfile.write(body)
             if self.path == '/api/status':
                 return self.send_json(200, helper.status())
-            if self.path == '/api/job':
-                return self.send_json(200, helper.job.view() if helper.job else {})
+            if self.path.startswith('/api/job'):
+                m = re.search(r'[?&]since=(\d+)', self.path)
+                return self.send_json(200, helper.job.view(int(m.group(1)) if m else 0) if helper.job else {})
             if self.path == '/api/console':
                 return self.send_json(200, {'lines': helper.monitor.tail() if helper.monitor else []})
             self.send_json(404, {'error': 'not found'})

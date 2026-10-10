@@ -78,6 +78,74 @@ class PureHelpers(unittest.TestCase):
         self.assertIsNone(sh.chip_from_esptool('A fatal error occurred: Failed to connect'))
 
 
+class JobLogAndHints(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self._cache = sh.CACHE
+        sh.CACHE = d.name
+        self.addCleanup(setattr, sh, 'CACHE', self._cache)
+
+    def test_full_log_incremental_and_file(self):
+        job = sh.Job('install')
+        for i in range(1000):
+            job.say('line %d' % i)
+        v = job.view()
+        self.assertEqual(len(v['log']), 1000)                 # the whole log, not a tail
+        self.assertEqual(v['logTotal'], 1000)
+        v2 = job.view(990)
+        self.assertEqual(v2['log'][0], 'line 990')
+        self.assertEqual(v2['logFrom'], 990)
+        job.close()
+        self.assertEqual(open(v['logFile']).read().count('\n'), 1000)
+
+    def test_trimmed_log_keeps_absolute_positions(self):
+        old = sh.LOG_MAX
+        sh.LOG_MAX = 10
+        self.addCleanup(setattr, sh, 'LOG_MAX', old)
+        job = sh.Job('x')
+        for i in range(25):
+            job.say(str(i))
+        v = job.view(3)                                        # asked for lines already trimmed
+        self.assertEqual(v['logFrom'], 15)
+        self.assertEqual(v['log'][0], '15')
+        self.assertEqual(job.view(24)['log'], ['24'])
+        job.close()
+
+    def test_explain_failure(self):
+        self.assertIn('Rosetta', sh.explain_failure(['sh: line 1: /x/mklittlefs: Bad CPU type in executable']))
+        self.assertIn('in use', sh.explain_failure(["could not open port /dev/cu.usbmodem1: [Errno 16] Resource busy"]))
+        self.assertEqual(sh.explain_failure(['all good']), '')
+
+    def test_failed_job_reports_likely_cause(self):
+        helper = sh.Helper()
+
+        def boom(job):
+            job.say('sh: line 1: /Users/x/.platformio/packages/tool-mklittlefs/mklittlefs: Bad CPU type in executable')
+            raise RuntimeError('flashing the blocklist failed (see the log)')
+        helper.start_job('install', boom)
+        for _ in range(100):
+            if helper.job.state != 'running':
+                break
+            threading.Event().wait(0.02)
+        v = helper.job.view()
+        self.assertEqual(v['state'], 'error')
+        self.assertIn('Rosetta', v['error'])
+        self.assertIn('softwareupdate --install-rosetta', v['error'])
+
+    def test_needs_rosetta_only_on_apple_silicon(self):
+        import unittest.mock as m
+        with m.patch.object(sh.sys, 'platform', 'linux'):
+            self.assertFalse(sh.needs_rosetta())
+        with m.patch.object(sh.sys, 'platform', 'darwin'), m.patch.object(sh.platform, 'machine', return_value='x86_64'):
+            self.assertFalse(sh.needs_rosetta())
+        with m.patch.object(sh.sys, 'platform', 'darwin'), m.patch.object(sh.platform, 'machine', return_value='arm64'):
+            with m.patch.object(sh.subprocess, 'call', return_value=1):
+                self.assertTrue(sh.needs_rosetta())
+            with m.patch.object(sh.subprocess, 'call', return_value=0):
+                self.assertFalse(sh.needs_rosetta())
+
+
 class HttpGuard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -118,6 +186,15 @@ class HttpGuard(unittest.TestCase):
         self.assertEqual(self.req('/api/job', token='wrong')[0], 403)
         self.assertEqual(self.req('/api/job', token=self.helper.token)[0], 200)
         self.assertEqual(self.req('/api/provision', data=b'{}')[0], 403)
+
+    def test_job_since(self):
+        job = self.helper.job = sh.Job('t')
+        self.addCleanup(job.close)
+        for i in range(5):
+            job.say('l%d' % i)
+        code, body, _ = self.req('/api/job?since=3', token=self.helper.token)
+        self.assertEqual(json.loads(body)['log'], ['l3', 'l4'])
+        self.helper.job = None
 
     def test_api_has_no_cors(self):
         _, _, h = self.req('/api/job', token=self.helper.token)

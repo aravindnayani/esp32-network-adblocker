@@ -35,7 +35,9 @@ Shows Python and esptool versions (from `/api/status`) and lists USB serial port
 
 ### 3. Install
 - **Prebuilt:** download `adblock-<chip>.bin` and `SHA256SUMS` from the Pages site (`flasher.yml` builds them), check the hash, `esptool --chip esp32<chip> --port P write-flash 0x0 adblock-<chip>.bin`. This wipes the whole flash, settings included.
-- **Source:** `pip install platformio` into `.setup-venv` if needed, copy `secrets.example.h` to `secrets.h` if missing, build `data/blocklist.bin` if missing, then `pio run -e <c3|s3|esp32dev> -t upload` and `-t uploadfs` on that port.
+- **Source:** on an Apple Silicon Mac without Rosetta 2, stop straight away and show `softwareupdate --install-rosetta --agree-to-license` (step 1 shows the same check, and Install stays disabled for source builds until it passes). Then `pip install platformio` into `.setup-venv` if needed, copy `secrets.example.h` to `secrets.h` if missing, build `data/blocklist.bin` if missing, then `pio run -e <c3|s3|esp32dev> -t upload` and `-t uploadfs` on that port.
+
+Every step's log is kept in full: the page fetches it incrementally (`/api/job?since=N`) into **Details — full log** with Copy and Save buttons, and the helper also writes it to `.setup-cache/logs/<time>-<step>.log`. Known failures (Intel-only tools, a busy or forbidden USB port) get a plain-language cause.
 
 Then it waits up to 40 s for `INFO` to answer (the first boot creates the TLS key).
 

@@ -140,6 +140,8 @@ echo 'ATTRS{idVendor}=="303a", ENV{ID_MM_DEVICE_IGNORE}="1"' | sudo tee /etc/ude
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
+**`Bad CPU type in executable` on an Apple Silicon Mac.** Two of the pinned PlatformIO packages, `toolchain-riscv32-esp` (the C3 compiler) and `tool-mklittlefs` (the blocklist image), only ship Intel binaries, even though PlatformIO lists them for arm64. Install Rosetta 2 once: `softwareupdate --install-rosetta --agree-to-license`. The classic ESP32 and S3 compilers are native, so their firmware builds without it, but `uploadfs` still needs it. `start-here.py` checks for this before building.
+
 **Early boot messages are missing.** The C3's USB console can drop output until your computer connects. Just reconnect the monitor.
 
 **`403 bad Host header`.** You reached the dashboard through some other name. Use `c3adblock.local` or the IP.

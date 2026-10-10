@@ -90,7 +90,9 @@
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -2px; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
-  .log { max-height: 220px; overflow: auto; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
+  .log { max-height: 420px; overflow: auto; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
+  .logbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; font-size: 13px; color: var(--muted); }
+  .logbar .path { overflow-wrap: anywhere; min-width: 0; }
   details { margin: 10px 0; }
   summary { cursor: pointer; font-weight: 600; }
   .big-link { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
@@ -195,7 +197,13 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
           <li><span class="i good">✓</span><span>Python <b id="c-py"></b></span></li>
           <li><span class="i good">✓</span><span>esptool <b id="c-esp"></b> <span class="muted">(in .setup-venv)</span></span></li>
           <li><span class="i" id="c-port-i">…</span><span id="c-port-t">Looking for the board…</span></li>
+          <li id="c-ros" hidden><span class="i" id="c-ros-i"></span><span id="c-ros-t"></span></li>
         </ul>
+        <div class="callout" id="c-ros-fix" hidden>
+          <b>Building from source on this Mac needs Rosetta 2.</b> Some of the pinned build tools (the ESP32-C3 compiler and the blocklist image maker) only come as Intel programs. Run this in Terminal once; this page notices by itself when it's done:
+          <div class="cmd"><pre>softwareupdate --install-rosetta --agree-to-license</pre><button type="button" class="copy">Copy</button></div>
+          Or choose <b>Prebuilt image</b> in step 2, which needs nothing extra (not available for the classic ESP32).
+        </div>
         <div id="c-ports" hidden>
           <label class="note" for="c-port">Board's USB port</label>
           <select class="field" id="c-port" style="max-width:32em"></select>
@@ -445,13 +453,22 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
       $('i-what').textContent = radioValue('method') === 'source'
         ? 'It builds everything from this folder with PlatformIO (installed into .setup-venv the first time).'
         : 'It downloads the prebuilt image for your board and checks it before flashing.';
+      var rosBlock = radioValue('method') === 'source' && S.rosetta;
+      show($('c-ros'), !!S.rosetta || S.rosettaWas);
+      $('c-ros-i').textContent = S.rosetta ? '✗' : '✓'; $('c-ros-i').className = 'i ' + (S.rosetta ? 'badc' : 'good');
+      $('c-ros-t').textContent = S.rosetta ? 'Rosetta 2 — not installed (only needed to build from source)' : 'Rosetta 2 installed';
+      show($('c-ros-fix'), rosBlock);
       ['b-detect', 'b-info', 'i-go', 'w-go'].forEach(function (id) { $(id).disabled = S.busy; });
+      if (rosBlock) $('i-go').disabled = true;
     }
 
     // ---- step 1: status, ports ----
     function refreshStatus() {
       return api('/api/status').then(function (st) {
         $('c-py').textContent = st.python; $('c-esp').textContent = st.esptool;
+        var ros = !!(st.rosetta && st.rosetta.needed);
+        if (S.rosetta && !ros) S.rosettaWas = true;      // keep the ✓ row visible once it's fixed
+        S.rosetta = ros;
         var sel = $('c-port'), prev = S.port;
         var opts = st.ports.map(function (p) {
           return '<option value="' + esc(p.port) + '">' + esc(p.port) + (p.kind ? ' — ' + esc(p.kind) : (p.desc ? ' — ' + esc(p.desc) : '')) + '</option>';
@@ -481,7 +498,22 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
     function runJob(path, body, prog) {
       S.busy = true; render();
       var box = $(prog); show(box, true);
-      box.innerHTML = '<div class="jhead"><span class="spinner"></span><span class="jstep">Starting…</span></div><details><summary class="note">Details</summary><pre class="log"></pre></details>';
+      box.innerHTML = '<div class="jhead"><span class="spinner"></span><span class="jstep">Starting…</span></div>' +
+        '<details><summary class="note">Details — full log</summary><pre class="log"></pre>' +
+        '<div class="logbar"><span class="lines">0 lines</span><button type="button" class="btn secondary small lcopy">Copy log</button>' +
+        '<button type="button" class="btn secondary small lsave">Save log</button><span class="path"></span></div></details>';
+      var lines = [], since = 0, logFile = '';
+      var log = box.querySelector('.log');
+      box.querySelector('.lcopy').addEventListener('click', function (e) {
+        var b = e.target, text = lines.join('\n');
+        function ok() { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy log'; }, 1500); }
+        if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(ok, function () {}); 
+      });
+      box.querySelector('.lsave').addEventListener('click', function () {
+        var url = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' })), a = document.createElement('a');
+        a.href = url; a.download = (logFile.split(/[\\/]/).pop()) || 'c3adblock-setup.log';
+        document.body.appendChild(a); a.click(); setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+      });
       function finish(ok, text) {
         S.busy = false;
         box.querySelector('.jhead').innerHTML = ok ? '<span class="good">✓ ' + esc(text) + '</span>' : '<span class="badc">✗ ' + esc(text) + '</span>';
@@ -491,10 +523,17 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
       return api(path, body).then(function () {
         return new Promise(function (resolve, reject) {
           (function poll() {
-            api('/api/job').then(function (j) {
-              box.querySelector('.jstep') && (box.querySelector('.jstep').textContent = j.step || '');
-              var log = box.querySelector('.log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
-              log.textContent = (j.log || []).join('\n'); if (atEnd) log.scrollTop = log.scrollHeight;
+            api('/api/job?since=' + since).then(function (j) {
+              if (box.querySelector('.jstep')) box.querySelector('.jstep').textContent = j.step || '';
+              var fresh = j.log || [];
+              if (fresh.length) {
+                var atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+                lines = lines.concat(fresh); since = j.logFrom + fresh.length;
+                log.appendChild(document.createTextNode((log.firstChild ? '\n' : '') + fresh.join('\n')));
+                if (atEnd) log.scrollTop = log.scrollHeight;
+              }
+              box.querySelector('.lines').textContent = lines.length + ' lines';
+              if (j.logFile && !logFile) { logFile = j.logFile; box.querySelector('.path').textContent = 'Also saved to ' + logFile; }
               if (j.state === 'running') { setTimeout(poll, 700); return; }
               if (j.state === 'ok') { finish(true, 'Done.'); resolve(j.result); }
               else { finish(false, j.error); reject(new Error(j.error)); }
