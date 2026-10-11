@@ -1700,6 +1700,11 @@ static mbedtls_x509_crt   tlsCert;
 static mbedtls_pk_context tlsKey;
 static mbedtls_ssl_config tlsConf;
 static mbedtls_ssl_cache_context tlsCache;
+// One TLS context for the dashboard, set up once at boot and reset per connection (as dotSsl
+// is). mbedtls_ssl_setup() allocates two ~16.7 KB record buffers; doing that per request, and
+// the dashboard polls every few seconds, broke the classic ESP32's ~100 KB heap into pieces
+// until neither a new session nor a network packet fit.
+static mbedtls_ssl_context tlsSsl;
 static String tlsFingerprint;                       // "AB:CD:..." SHA-256 of the certificate
 
 static bool makeTlsCert(uint8_t* keyDer, size_t& keyLen, uint8_t* crtDer, size_t& crtLen) {
@@ -1843,11 +1848,11 @@ static void tlsServe(int fd, uint32_t peer) {
   static const size_t HEAD_MAX = 4096;
   static char head[HEAD_MAX + 1], out[HEAD_MAX + 160];   // tlsTask only
   static uint8_t buf[1460];
-  mbedtls_ssl_context ssl; mbedtls_ssl_init(&ssl);
+  mbedtls_ssl_context& ssl = tlsSsl;               // tlsTask only
   int in = -1, r;
   do {
     relayAt(1);
-    if ((r = mbedtls_ssl_setup(&ssl, &tlsConf))) { tlsFailNote("setup", r); break; }   // usually out of memory
+    if ((r = mbedtls_ssl_session_reset(&ssl))) { tlsFailNote("reset", r); break; }
     mbedtls_ssl_set_bio(&ssl, &fd, tlsSend, tlsRecv, nullptr);
     while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {}
     if (r) { tlsFailNote("handshake", r); break; }  // e.g. the browser refusing the certificate until it's accepted
@@ -1925,7 +1930,6 @@ static void tlsServe(int fd, uint32_t peer) {
     mbedtls_ssl_close_notify(&ssl);
   } while (false);
   if (in >= 0) close(in);
-  mbedtls_ssl_free(&ssl);
 }
 static void tlsTask(void* arg) {
   int ls = (int)(intptr_t)arg;
@@ -1949,6 +1953,8 @@ static bool startHttps() {
   if (mbedtls_ssl_conf_own_cert(&tlsConf, &tlsCert, &tlsKey)) return false;
   mbedtls_ssl_cache_init(&tlsCache); mbedtls_ssl_cache_set_max_entries(&tlsCache, 8);
   mbedtls_ssl_conf_session_cache(&tlsConf, &tlsCache, mbedtls_ssl_cache_get, mbedtls_ssl_cache_set);
+  mbedtls_ssl_init(&tlsSsl);
+  if (int r = mbedtls_ssl_setup(&tlsSsl, &tlsConf)) { tlsFailNote("setup", r); return false; }
   int ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP), one = 1;
   if (ls < 0) return false;
   setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -1994,7 +2000,30 @@ static bool connectWiFi() {
   const char* pass = ss.length() ? pw.c_str() : WIFI_PASS;
   if (!ssid || !*ssid || strcmp(ssid, "YOUR_WIFI_SSID") == 0) return false;  // unconfigured
   Serial.printf("WiFi: connecting to \"%s\"%s\n", ssid, ss.length() ? " (provisioned)" : " (secrets.h)");
-  WiFi.mode(WIFI_STA); WiFi.setSleep(false); WiFi.begin(ssid, pass);
+  WiFi.mode(WIFI_STA); WiFi.setSleep(false);
+  // On a mixed WPA2/WPA3 network, join with WPA2. The chip otherwise picks WPA3 (SAE + PMF),
+  // and on the classic ESP32 that lost broadcast traffic a while after joining: the device
+  // stayed "connected" and healthy but stopped answering ARP, so nothing could reach it (and
+  // c3adblock.local, which is multicast, never resolved). A mixed network accepts WPA2 by
+  // design. Arduino's WiFi.begin() always enables PMF, which makes the chip choose SAE, so
+  // the station config is set here directly; Arduino's reconnects reuse it.
+  bool mixed = false;
+  int n = WiFi.scanNetworks(false, true, false, 120);
+  for (int i = 0; i < n; i++) if (WiFi.SSID(i) == ssid && WiFi.encryptionType(i) == WIFI_AUTH_WPA2_WPA3_PSK) { mixed = true; break; }
+  WiFi.scanDelete();
+  if (mixed && pass && *pass) {
+    Serial.println("WiFi: mixed WPA2/WPA3 network, joining with WPA2");
+    wifi_config_t c = {};
+    strncpy((char*)c.sta.ssid, ssid, sizeof(c.sta.ssid));
+    strncpy((char*)c.sta.password, pass, sizeof(c.sta.password));      // 64-hex keys fill it exactly, no NUL needed
+    c.sta.scan_method = WIFI_ALL_CHANNEL_SCAN; c.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    c.sta.threshold.rssi = -127; c.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    c.sta.pmf_cfg.capable = false; c.sta.pmf_cfg.required = false;     // no PMF -> no SAE -> WPA2-PSK
+    esp_wifi_set_config(WIFI_IF_STA, &c);
+    esp_wifi_connect();
+  } else {
+    WiFi.begin(ssid, pass);
+  }
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000) { delay(250); Serial.print("."); }
   Serial.println();

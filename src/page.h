@@ -242,5 +242,5 @@ let fd=new FormData();fd.append('f',f);
 try{let r=await fetch('/upload',{method:'POST',headers:CSRF_HDRS,body:fd});say(upmsg,(r.ok?'✓ ':'✗ ')+await r.text());}
 catch(_){say(upmsg,'✗ upload failed');}
 blf.value='';setTimeout(load,600);};
-load();setInterval(load,3000);
+load();setInterval(()=>{if(!document.hidden)load()},3000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)load()});
 </script></body></html>)HTML";
