@@ -26,9 +26,9 @@ your laptop ─"where is github.com?"───────▶  ESP32  ──▶ 
 |---|---|---|---|
 | **ESP32-C3**, 4 MB flash (e.g. C3 SuperMini) — *recommended* | ~$2 | ~250k domains | ✅ |
 | **ESP32-S3**, 8 MB+ flash (e.g. S3 DevKitC-1 N8/N16) | ~$5–10 | ~1M domains | ✅ |
-| Classic **ESP32**, 4 MB (DevKit / WROOM) | ~$3–5 | ~250k domains | build from source |
+| Classic **ESP32**, 4 MB (DevKit / WROOM) — *tight on RAM, see [below](#classic-esp32)* | ~$3–5 | ~250k domains | build from source |
 
-The C3 is plenty for the default ~100k-domain list, and for every category combination the dashboard offers (at most ~180k). Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi).
+The C3 is plenty for the default ~100k-domain list, and for every category combination the dashboard offers (at most ~180k). Pick the S3 if you want very large lists (it fits the ~500k "everything" list and still updates over WiFi). If you're buying a board, get a C3 or an S3 rather than a classic ESP32.
 
 ### ▶ Run the setup helper
 
@@ -44,7 +44,11 @@ It opens a setup page in your browser (Chrome, Edge, Safari or Firefox) and does
 
 New to the terminal? Open [`START-HERE.html`](START-HERE.html) in your browser first. It shows how to install Python and start the helper on macOS, Windows or Linux.
 
-Once the board is online, open **https://c3adblock.local**. Its **Finish setting up** card walks you through choosing what to block (social media, gambling, adult content, fake news, on top of ads and trackers), exceptions for apps that must keep working, and pointing your router at it.
+Once the board is online, open **https://c3adblock.local** (or its IP, which the setup page shows). Its **Finish setting up** card walks you through choosing what to block (social media, gambling, adult content, fake news, on top of ads and trackers), exceptions for apps that must keep working, and pointing your router at it.
+
+Keep the board plugged into your computer until you've done that: it's already on your WiFi, and the helper can show what it prints if anything goes wrong. Then stop the helper (Ctrl+C), and move the board to your router's USB port or any USB charger near it. It keeps its settings and rejoins WiFi by itself.
+
+The board needs **2.4 GHz** WiFi. On a mixed WPA2/WPA3 network it joins with WPA2, which those networks accept by design (the classic ESP32 lost broadcast traffic on WPA3).
 
 ### Turn it on for your network
 
@@ -125,16 +129,47 @@ pio run -t upload && pio run -t uploadfs
 
 After that, firmware and blocklists update over WiFi.
 
+- **On an Apple Silicon Mac, install Rosetta 2 first** (`softwareupdate --install-rosetta --agree-to-license`). Two of the pinned PlatformIO tools, the C3 compiler and `mklittlefs`, only ship Intel binaries. The helper checks for it before building. The prebuilt images need nothing extra.
+- **Flashing from source resets the dashboard's settings.** `uploadfs` (and the helper's *Build from source*) rewrites the whole filesystem: what to block, the auto-update URL, exceptions, custom domains and bans. WiFi and the admin password live elsewhere and are kept. Update firmware over WiFi (**Firmware → OTA update**) to keep them.
+
 → Custom blocklists, settings, partition layout and troubleshooting: [guide/building.md](guide/building.md)
 
 ---
 
 ## Hardware tips
 
-- **Board:** see the [table above](#get-started). The C3 is the main tested target. The classic ESP32 is community-contributed and compile-tested.
+- **Board:** see the [table above](#get-started). The C3 is the main tested target; the S3 is built and checked by CI the same way.
 - **BOOT LED:** blinks when an action waits for your press. It's the blue LED on a C3 SuperMini and the RGB LED on an S3 DevKitC-1. On a DevKitC-1 v1.1 the RGB LED moved to GPIO 38, so build with `-DCONFIRM_LED=38 -DCONFIRM_LED_RGB`.
 - **Power:** use a solid USB source. A router's USB port plus a USB-A→C adapter works well. Cheap adapters can cause dropouts.
 - **Case:** a printable C3 SuperMini enclosure is in [`hardware/`](hardware/esp32-c3-supermini-enclosure.stl). Keep the antenna end (opposite the USB port) clear of plastic and metal.
+
+### Classic ESP32
+
+It works, but with little room to spare. On a classic ESP32 (WROOM, ESP32-D0WD-V3, no PSRAM), the device keeps two TLS sessions open, one for the dashboard and one for DNS-over-TLS, at about 33 KB each. That leaves about 75 KB free, with a largest block of about 29 KB. To make that hold up, the firmware:
+
+- sends the dashboard page straight from flash
+- reuses one TLS context instead of setting one up per request
+- keeps the browser's connection open between refreshes
+- prefers X25519 for the key exchange (a full handshake takes ~1.2 s, a resumed one well under 0.1 s)
+- uses a smaller lookup index
+
+Known limits:
+- **Downloading a blocklist from the dashboard** (**What to block → Apply**, **Fetch now**, the daily auto-update) **still fails here** with `SSL - Memory allocation failed`. A third TLS session doesn't fit, even with DNS-over-TLS lending its memory for the download. Until that's fixed, build a list with `tools/build_blocklist.py` and use **Blocklist → Upload** on the dashboard.
+- **One browser tab at a time is smoothest.** The device serves one HTTPS connection at a time and gives way when another is waiting, so two open dashboards take turns.
+- **Uploads can hit serial noise.** The board's CP2102 USB-serial chip sometimes drops out at 460,800 baud ("The chip stopped responding"). Run *Install* again.
+
+### When something goes wrong
+
+The setup helper's **Board console** panel shows everything the board prints over USB, and can send it these commands:
+
+| Command | What it does |
+|---|---|
+| `INFO` | Mode (setup or online), IP, setup WiFi name, certificate fingerprint, free memory |
+| `NETS` | The WiFi networks the board can see (setup mode) |
+| `DIAG` / `DIAG off` | A `[health]` line every 2 s. It shows free and lowest memory, the largest free block, whether the main loop and DNS task are running, what the HTTPS relay is doing, WiFi signal and free task stack. The board also prints one by itself when something looks stuck or memory runs low. |
+| `FETCH [https-url]` | Download a blocklist now: the saved update URL, or the given one once, without saving it |
+
+Each helper step's full log is also saved in `.setup-cache/logs/`.
 
 ---
 
