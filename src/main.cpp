@@ -1955,6 +1955,11 @@ static bool startHttps() {
   mbedtls_ssl_config_init(&tlsConf);
   if (mbedtls_ssl_config_defaults(&tlsConf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT)) return false;
   mbedtls_ssl_conf_rng(&tlsConf, hwRng, nullptr);
+  // Prefer X25519 for the per-connection key exchange: in software it's several times faster
+  // than P-256, and a full handshake on the classic ESP32 took ~2.5 s with three P-256
+  // operations. P-256 stays allowed (and is what the certificate's signature uses).
+  static const mbedtls_ecp_group_id curves[] = { MBEDTLS_ECP_DP_CURVE25519, MBEDTLS_ECP_DP_SECP256R1, MBEDTLS_ECP_DP_NONE };
+  mbedtls_ssl_conf_curves(&tlsConf, curves);
   if (mbedtls_ssl_conf_own_cert(&tlsConf, &tlsCert, &tlsKey)) return false;
   mbedtls_ssl_cache_init(&tlsCache); mbedtls_ssl_cache_set_max_entries(&tlsCache, 8);
   mbedtls_ssl_conf_session_cache(&tlsConf, &tlsCache, mbedtls_ssl_cache_get, mbedtls_ssl_cache_set);
