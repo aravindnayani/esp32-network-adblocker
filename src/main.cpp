@@ -1946,7 +1946,8 @@ static void tlsServe(int fd, uint32_t peer, int ls) {
     if (in < 0 || connect(in, (sockaddr*)&a, sizeof(a))) break;
     // Both directions time out: a send that blocks forever (the dashboard not reading while
     // it waits to write its own reply) would wedge this task, and with it every HTTPS request.
-    timeval tv = { 30, 0 }; setsockopt(in, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    // 120 s: "Fetch now" / What to block downloads and writes a ~1 MB list before answering.
+    timeval tv = { 120, 0 }; setsockopt(in, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     timeval sv = { 10, 0 }; setsockopt(in, SOL_SOCKET, SO_SNDTIMEO, &sv, sizeof(sv));
     relayAt(4);
     if (!sendAll(in, (const uint8_t*)out, o) || ((size_t)end < len && !sendAll(in, (const uint8_t*)head + end, len - end))) break;
@@ -1962,7 +1963,7 @@ static void tlsServe(int fd, uint32_t peer, int ls) {
       timeval t = { 0, 200000 };
       int s = buffered ? 1 : select(max(fd, in) + 1, &rf, nullptr, nullptr, &t);
       if (s < 0) { ok = false; break; }
-      if (s == 0) { if (millis() - idle > 30000) { ok = false; break; } continue; }
+      if (s == 0) { if (millis() - idle > 120000) { ok = false; break; } continue; }
       if (buffered || FD_ISSET(fd, &rf)) {          // browser -> dashboard (request body)
         r = mbedtls_ssl_read(&ssl, buf, sizeof(buf));
         if (r > 0) { if (!sendAll(in, buf, r)) { ok = false; break; } idle = millis(); }
