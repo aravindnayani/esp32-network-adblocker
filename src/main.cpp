@@ -649,6 +649,8 @@ static const char S_DOT_IDLE[] = "encrypted: DNS-over-TLS to " DOT_NAME " (idle,
 static const char S_DOT_CONN[] = "DOWN: can't connect to " DOT_NAME " (port blocked?). Lookups fail until it works.";
 static const char S_DOT_TLS[]  = "DOWN: TLS handshake with " DOT_NAME " failed. Lookups fail until it works.";
 static const char S_DOT_CERT[] = "DOWN: " DOT_NAME " presented a certificate that doesn't check out. Lookups fail until it does.";
+static const char S_DOT_PAUSED[] = "paused while a blocklist downloads (its TLS memory is lent to the download)";
+static const char S_DOT_NOMEM[]  = "DOWN: not enough memory to set DNS-over-TLS up again after a download; retrying every second";
 const char* volatile upstreamStatus = S_DOT_IDLE;
 enum DotState : uint8_t { DOT_DOWN, DOT_CONNECTING, DOT_HANDSHAKE, DOT_UP };
 static DotState dotState = DOT_DOWN;
@@ -778,7 +780,12 @@ static void dotPump() {
   }
 }
 // 0 if the query can go out (opening the connection if needed), -1 to answer SERVFAIL.
+// Lending dotSsl's ~33 KB to a blocklist download (see dotLend). Only dnsTask frees or sets
+// up dotSsl; other tasks ask through dotPause: 1 = please free it, 2 = freed, 3 = set it up
+// again (and 0 once that worked).
+static volatile uint8_t dotPause = 0;
 static int upstreamPick(int qlen) {
+  if (dotPause) return -1;                             // lent to a download: SERVFAIL, clients retry
   if (dotState == DOT_DOWN) {
     if ((int32_t)(millis() - dotRetryAt) < 0) return -1;   // backing off after a failure
     if (!dotOpen()) return -1;
@@ -876,8 +883,32 @@ static void handleClientQueries() {
     else if (!forwardUpstream(cip, cport, qlen, qend) && dl) sendTo(dnsSock, cip, cport, dbuf, buildServfail(dbuf, qend));
   }
 }
+#ifndef UPSTREAM_PLAIN
+// Called from dnsTask only, so dotSsl is never freed or rebuilt under a running handshake.
+static void dotPauseStep() {
+  static uint32_t lastTry = 0;
+  if (dotPause == 1) {
+    dotDrop(false, S_DOT_PAUSED);
+    mbedtls_ssl_free(&dotSsl);
+    dotPause = 2;
+  } else if (dotPause == 3 && millis() - lastTry >= 1000) {
+    lastTry = millis();
+    mbedtls_ssl_init(&dotSsl);
+    if (mbedtls_ssl_setup(&dotSsl, &dotConf) == 0) {
+      mbedtls_ssl_set_bio(&dotSsl, nullptr, dotSend, dotRecv, nullptr);
+      upstreamStatus = S_DOT_IDLE; dotRetryAt = 0; dotPause = 0;
+    } else {
+      mbedtls_ssl_free(&dotSsl);
+      upstreamStatus = S_DOT_NOMEM;
+    }
+  }
+}
+#endif
 static void dnsTask(void*) {
   for (;;) {
+#ifndef UPSTREAM_PLAIN
+    if (dotPause == 1 || dotPause == 3) dotPauseStep();
+#endif
     lanIp = (uint32_t)WiFi.localIP(); lanMask = (uint32_t)WiFi.subnetMask();   // follows DHCP changes
     fd_set rf, wf; FD_ZERO(&rf); FD_ZERO(&wf); FD_SET(dnsSock, &rf); int maxfd = dnsSock;
 #ifdef UPSTREAM_PLAIN
@@ -1617,7 +1648,24 @@ static void saveUpdateCfg() {
 // ca_bundle.h (tools/gen_ca_bundle.py). This used to be setInsecure() and also allowed
 // plain http, so anyone on the network path could swap in their own list: one that blocks
 // nothing, or one that blocks sites of their choosing.
+static bool fetchBlocklistNow(String url);
+// A download needs a third TLS session (~33 KB) next to the dashboard's and DNS-over-TLS's,
+// which the classic ESP32 can't fit ("SSL - Memory allocation failed"). So DNS-over-TLS lends
+// its memory for the few seconds of the download: dnsTask frees dotSsl, the download runs,
+// then dnsTask sets it up again (retrying each second if memory is too fragmented at first).
+// Lookups get SERVFAIL meanwhile; clients retry. Every chip does this, for the same headroom.
 static bool fetchBlocklist(String url) {
+#ifndef UPSTREAM_PLAIN
+  dotPause = 1;
+  for (int i = 0; i < 40 && dotPause != 2; i++) delay(25);   // dnsTask wakes at least every 100 ms
+  bool ok = fetchBlocklistNow(url);
+  dotPause = 3;
+  return ok;
+#else
+  return fetchBlocklistNow(url);
+#endif
+}
+static bool fetchBlocklistNow(String url) {
   url.trim(); if (!url.length()) { updateStatus = "no url set"; return false; }
   if (!url.startsWith("https://")) { updateStatus = "rejected: URL must start with https://"; return false; }
   Serial.printf("[remote] GET %s\n", url.c_str());
