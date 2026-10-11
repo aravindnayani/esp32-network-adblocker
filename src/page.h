@@ -14,14 +14,16 @@ table{width:100%;border-collapse:collapse;background:#161b22;border-radius:8px;o
 th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #21262d;font-size:13px}
 th{background:#21262d;color:#8b949e}tr:hover td{background:#1c2128}
 .b{color:#f85149}.a{color:#3fb950}.tag{background:#30363d;border-radius:4px;padding:1px 6px;font-size:11px}
-button{background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:4px 9px;cursor:pointer}
-button:hover{background:#30363d}.ban{color:#f85149}input{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;padding:6px}
+button,::file-selector-button{background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb99;border-radius:5px;padding:4px 9px;cursor:pointer;font:inherit}
+button:hover,::file-selector-button:hover{background:#1f6feb44;color:#79c0ff}button.ban{border-color:#f8514999}button.ban:hover{background:#f8514922}.ban{color:#f85149}input{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:5px;padding:6px}
 h2{font-size:14px;color:#8b949e;margin:18px 0 8px}
 .panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 14px;margin-bottom:14px}
 .cats label{display:block;margin:6px 0}.cats small,.muted{color:#8b949e;font-size:12px}
 .chip{margin:3px 4px 3px 0}.chip.on{border-color:#3fb950;color:#3fb950}
 #setup ol{margin:6px 0 8px;padding-left:20px}#setup li{margin:6px 0}#setup .ok{color:#3fb950}
 details.help{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;margin-bottom:12px}
+input[type=checkbox]{accent-color:#58a6ff}
+.st{font-size:12px;color:#d2a8ff}.st.busy{color:#d29922}.st.ok{color:#3fb950}.st.err{color:#f85149}.st.none{color:#8b949e}
 details.help summary{cursor:pointer;font-weight:600}details.help li{margin:4px 0}code{background:#21262d;padding:0 4px;border-radius:4px}
 </style></head><body>
 <header><h1>🛡️ C3 AdBlock <span id=host></span></h1></header><div class=wrap>
@@ -57,7 +59,7 @@ details.help summary{cursor:pointer;font-weight:600}details.help li{margin:4px 0
 <label><input type=checkbox class=cat value=gambling> Gambling <small>&mdash; betting and casino sites</small></label>
 <label><input type=checkbox class=cat value=porn> Adult content</label>
 <label><input type=checkbox class=cat value=fakenews> Fake news <small>&mdash; known misinformation sites</small></label>
-<div style=margin-top:10px><button onclick=applyCats()>Apply</button> <span id=catmsg class=muted></span></div>
+<div style=margin-top:10px><button onclick=applyCats()>Apply</button> <span id=catmsg class=st></span></div>
 <div class=muted style=margin-top:6px>Applying downloads the matching list from this project's weekly build, keeps it up to date every day, and needs a BOOT press. Need one app through anyway? Add an exception below.</div>
 </div>
 <h2>EXCEPTIONS &mdash; NEVER BLOCKED</h2>
@@ -73,20 +75,20 @@ details.help summary{cursor:pointer;font-weight:600}details.help li{margin:4px 0
 <div style=margin-bottom:8px><input id=dom placeholder="ads.example.com" size=30><button onclick=addDom()>Block domain</button></div>
 <table id=cl><tbody></tbody></table>
 <h2>BLOCKLIST &mdash; UPLOAD</h2>
-<form id=upf style=margin-bottom:6px><input type=file id=blf accept=.bin><button>Upload blocklist</button> <span id=upmsg style=color:#8b949e></span></form>
+<form id=upf style=margin-bottom:6px><input type=file id=blf accept=.bin><button>Upload blocklist</button> <span id=upmsg class=st></span></form>
 <div style="color:#8b949e;font-size:12px;margin-bottom:18px">build <code>blocklist.bin</code> with <code>tools/build_blocklist.py</code>, then upload here &mdash; no USB</div>
 <h2>BLOCKLIST &mdash; REMOTE AUTO-UPDATE</h2>
 <div style=margin-bottom:6px><input id=uurl type=url pattern="https://.*" placeholder="https://host/blocklist.bin" size=40> every <input id=uiv type=number min=1 max=720 style=width:4.5em value=24>h
 <button onclick=saveUpd()>Save</button> <button onclick=fetchNow()>Fetch now</button></div>
-<div style="color:#8b949e;font-size:12px;margin-bottom:18px">device pulls a prebuilt <code>blocklist.bin</code> on a schedule (e.g. a GitHub release asset). last: <span id=ustat>&mdash;</span></div>
+<div style="color:#8b949e;font-size:12px;margin-bottom:18px">device pulls a prebuilt <code>blocklist.bin</code> on a schedule (e.g. a GitHub release asset). last: <span id=ustat class="st none">&mdash;</span></div>
 <h2>FIRMWARE &mdash; OTA UPDATE</h2>
-<form id=fwf style=margin-bottom:6px><input type=file id=fwb accept=.bin><button>Flash firmware</button> <span id=fwmsg style=color:#8b949e></span></form>
+<form id=fwf style=margin-bottom:6px><input type=file id=fwb accept=.bin><button>Flash firmware</button> <span id=fwmsg class=st></span></form>
 <div style="color:#8b949e;font-size:12px;margin-bottom:18px">upload <code>.pio/build/c3/firmware.bin</code> &mdash; device verifies it and reboots into it</div>
 <h2>WIFI</h2>
 <div style=margin-bottom:18px><button onclick="if(confirm('Forget saved WiFi and reboot into the setup portal?'))forgetWifi()">Forget WiFi</button></div>
 <h2>SECURITY</h2>
 <div style=margin-bottom:6px><label><input type=checkbox id=physcb onchange=setPhys()> Require a BOOT button press for firmware/blocklist uploads, a new update URL, Forget WiFi and pausing for more than 15 min an hour</label></div>
-<div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin></span></div>
+<div style="color:#8b949e;font-size:12px;margin-bottom:12px">stops software that has your password (a browser agent, a script) from changing these on its own. With it on, network OTA (<code>pio run -t upload</code>) only works for 60 s after you press BOOT. <span id=otawin class="st busy"></span></div>
 <table id=lt><thead><tr><th>Locked out</th><th>MAC</th><th>Wrong passwords</th><th>Status</th></tr></thead><tbody></tbody></table>
 <table id=at><thead><tr><th>When</th><th>From</th><th>Event</th><th>Detail</th></tr></thead><tbody></tbody></table>
 <h2 id=helpsec>HOW TO USE &amp; UPDATE</h2>
@@ -104,6 +106,8 @@ details.help summary{cursor:pointer;font-weight:600}details.help li{margin:4px 0
 </ul></details>
 </div></div><script>
 function fmt(n){return n.toLocaleString()}
+// Status text, colored by what it says: amber while working, green on success, red on failure.
+function say(el,t){t=String(t);el.textContent=t;el.className='st '+(/^(✓|ok)/.test(t)?'ok':/^(✗|failed|rejected|begin failed|no url|not applied)/.test(t)?'err':/(\.\.\.|…)$/.test(t)?'busy':/^(never|—|)$/.test(t)?'none':'')}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 // A plain <img>/<form> CSRF can't set a custom header, only same-origin fetch()
 // can — so requiring this on every mutating request blocks drive-by CSRF even
@@ -147,11 +151,11 @@ at.tBodies[0].innerHTML=s.audit.map(a=>`<tr><td>${ago(a.ago)}</td><td>${esc(a.ip
 upurlNow=s.upurl||'';
 if(document.activeElement!=uurl)uurl.value=s.upurl||'';
 if(document.activeElement!=uiv)uiv.value=s.upiv||24;
-ustat.textContent=s.upstat||'—';
+say(ustat,s.upstat||'—');
 al.tBodies[0].innerHTML=s.allow.map(d=>`<tr><td>${esc(d)}</td><td style=text-align:right><button class=rmalw data-d="${esc(d)}">remove</button></td></tr>`).join('')||'<tr><td style=color:#8b949e>none yet</td></tr>';
 allowNow=s.allow;drawPicks();
 let cur=catsFromUrl(s.upurl||'');if(!catsTouched)document.querySelectorAll('.cat').forEach(c=>c.checked=!!cur&&cur.includes(c.value));
-if(!catmsg.dataset.busy)catmsg.textContent=cur?'In use: '+(cur.length?cur.map(c=>CATN[c]).join(', ')+' + ':'')+'ads & trackers.':(s.upurl?'A custom list URL is in use (see Remote auto-update).':'Not set yet: the device only has the list it was installed with.');
+if(!catmsg.dataset.busy)say(catmsg,cur?'In use: '+(cur.length?cur.map(c=>CATN[c]).join(', ')+' + ':'')+'ads & trackers.':(s.upurl?'A custom list URL is in use (see Remote auto-update).':'Not set yet: the device only has the list it was installed with.'));
 document.querySelectorAll('.myip').forEach(e=>e.textContent=s.ip);
 let me=s.clients.find(c=>c.ip==s.you),others=s.clients.filter(c=>c.ip!=s.you&&c.blocked+c.allowed>0).length;
 let d1=!!cur,d2=others>0,d3=!!me&&me.blocked+me.allowed>0;
@@ -173,11 +177,11 @@ function catsUrl(sel){return LISTS+(sel.length?'blocklist-'+sel.join('-')+'.bin'
 function catsFromUrl(u){if(!u.startsWith(LISTS))return null;let f=u.slice(LISTS.length);if(f=='blocklist.bin')return[];
 let m=/^blocklist-([a-z-]+)\.bin$/.exec(f);if(!m)return null;let c=m[1].split('-');return c.every(x=>CATS.includes(x))?c:null}
 async function applyCats(){let sel=CATS.filter(c=>document.querySelector('.cat[value='+c+']').checked),u=catsUrl(sel);
-catmsg.dataset.busy=1;catmsg.textContent='waiting for BOOT press...';
-try{if(u!=upurlNow){if(!await gated('setupdate',u)){catmsg.textContent='not applied';return}
-let r=await fetch('/setupdate?u='+encodeURIComponent(u)+'&h=24',{headers:CSRF_HDRS});if(!r.ok){catmsg.textContent='✗ '+await r.text();return}}
-catmsg.textContent='downloading the new list (up to a minute)...';
-let t=await(await fetch('/fetchnow',{headers:CSRF_HDRS})).text();catmsg.textContent=(t.startsWith('ok')?'✓ ':'✗ ')+t;catsTouched=false}
+catmsg.dataset.busy=1;say(catmsg,'waiting for BOOT press...');
+try{if(u!=upurlNow){if(!await gated('setupdate',u)){say(catmsg,'not applied');return}
+let r=await fetch('/setupdate?u='+encodeURIComponent(u)+'&h=24',{headers:CSRF_HDRS});if(!r.ok){say(catmsg,'✗ '+await r.text());return}}
+say(catmsg,'downloading the new list (up to a minute)...');
+let t=await(await fetch('/fetchnow',{headers:CSRF_HDRS})).text();say(catmsg,(t.startsWith('ok')?'✓ ':'✗ ')+t);catsTouched=false}
 finally{delete catmsg.dataset.busy;setTimeout(load,1500)}}
 // Domains each app needs, so an exception lets the whole app work rather than just its home page.
 const PICKS={WhatsApp:['whatsapp.com','whatsapp.net','wa.me'],Instagram:['instagram.com','cdninstagram.com'],
@@ -226,17 +230,17 @@ function addDom(){let d=dom.value.trim();if(d){fetch('/addblock?d='+encodeURICom
 ct.addEventListener('click',e=>{if(e.target.classList.contains('ban'))fetch('/ban?ip='+encodeURIComponent(e.target.dataset.ip)+'&mac='+encodeURIComponent(e.target.dataset.mac),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})});
 cl.addEventListener('click',e=>{if(e.target.classList.contains('rmbtn'))fetch('/unblock?d='+encodeURIComponent(e.target.dataset.d),{headers:CSRF_HDRS}).then(load)});
 async function saveUpd(){if(uurl.value.trim()!=upurlNow&&!await gated('setupdate',uurl.value.trim()))return;fetch('/setupdate?u='+encodeURIComponent(uurl.value.trim())+'&h='+(parseInt(uiv.value)||24),{headers:CSRF_HDRS}).then(async r=>{if(!r.ok)alert(await r.text());load()})}
-function fetchNow(){ustat.textContent='fetching...';fetch('/fetchnow',{headers:CSRF_HDRS}).then(r=>r.text()).then(t=>{ustat.textContent=t;load()})}
+function fetchNow(){say(ustat,'fetching...');fetch('/fetchnow',{headers:CSRF_HDRS}).then(r=>r.text()).then(t=>{say(ustat,t);load()})}
 async function forgetWifi(){if(!await gated('forgetwifi'))return;fetch('/forgetwifi',{headers:CSRF_HDRS}).then(r=>r.text()).then(t=>alert(t))}
-fwf.onsubmit=async e=>{e.preventDefault();let f=fwb.files[0];if(!f)return;fwmsg.textContent='waiting for BOOT press...';if(!await gated('update',await fileTag(f))){fwmsg.textContent='';return}fwmsg.textContent='flashing '+(f.size/1048576).toFixed(2)+' MB...';
+fwf.onsubmit=async e=>{e.preventDefault();let f=fwb.files[0];if(!f)return;say(fwmsg,'waiting for BOOT press...');if(!await gated('update',await fileTag(f))){say(fwmsg,'');return}say(fwmsg,'flashing '+(f.size/1048576).toFixed(2)+' MB...');
 let fd=new FormData();fd.append('f',f);
-try{let r=await fetch('/update',{method:'POST',headers:CSRF_HDRS,body:fd});fwmsg.textContent=r.ok?'✓ rebooting, reconnect in ~15s':'✗ '+await r.text();}
-catch(_){fwmsg.textContent='✓ rebooting, reconnect in ~15s';}};
-upf.onsubmit=async e=>{e.preventDefault();let f=blf.files[0];if(!f)return;upmsg.textContent='waiting for BOOT press...';if(!await gated('upload',await fileTag(f))){upmsg.textContent='';return}
-upmsg.textContent='uploading '+(f.size/1048576).toFixed(2)+' MB...';
+try{let r=await fetch('/update',{method:'POST',headers:CSRF_HDRS,body:fd});say(fwmsg,r.ok?'✓ rebooting, reconnect in ~15s':'✗ '+await r.text());}
+catch(_){say(fwmsg,'✓ rebooting, reconnect in ~15s');}};
+upf.onsubmit=async e=>{e.preventDefault();let f=blf.files[0];if(!f)return;say(upmsg,'waiting for BOOT press...');if(!await gated('upload',await fileTag(f))){say(upmsg,'');return}
+say(upmsg,'uploading '+(f.size/1048576).toFixed(2)+' MB...');
 let fd=new FormData();fd.append('f',f);
-try{let r=await fetch('/upload',{method:'POST',headers:CSRF_HDRS,body:fd});upmsg.textContent=(r.ok?'✓ ':'✗ ')+await r.text();}
-catch(_){upmsg.textContent='✗ upload failed';}
+try{let r=await fetch('/upload',{method:'POST',headers:CSRF_HDRS,body:fd});say(upmsg,(r.ok?'✓ ':'✗ ')+await r.text());}
+catch(_){say(upmsg,'✗ upload failed');}
 blf.value='';setTimeout(load,600);};
 load();setInterval(()=>{if(!document.hidden)load()},3000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)load()});
 </script></body></html>)HTML";
