@@ -1813,7 +1813,7 @@ static void tlsFailNote(const char* what, int r) {
 }
 // Answer GET / (the dashboard page) and /favicon.ico without the inner WebServer. Returns
 // true if it answered. Same Host rule as hostOk().
-static bool tlsServeStatic(mbedtls_ssl_context* ssl, const char* head, int end) {
+static bool tlsServeStatic(mbedtls_ssl_context* ssl, const char* head, int end, bool& keep) {
   bool page = !strncmp(head, "GET / ", 6) || !strncmp(head, "GET /? ", 7) || !strncmp(head, "GET /index.html ", 16);
   bool icon = !strncmp(head, "GET /favicon.ico ", 17);
   if (!page && !icon) return false;
@@ -1831,37 +1831,72 @@ static bool tlsServeStatic(mbedtls_ssl_context* ssl, const char* head, int end) 
     int n = snprintf(hdr, sizeof(hdr), "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
                      (unsigned)(sizeof(BAD) - 1));
     if (tlsWriteAll(ssl, (const uint8_t*)hdr, n)) tlsWriteAll(ssl, (const uint8_t*)BAD, sizeof(BAD) - 1);
+    keep = false;
     return true;
   }
+  const char* conn = keep ? "keep-alive" : "close";
   if (icon) {
-    static const char NONE[] = "HTTP/1.1 204 No Content\r\nCache-Control: max-age=86400\r\nConnection: close\r\n\r\n";
-    tlsWriteAll(ssl, (const uint8_t*)NONE, sizeof(NONE) - 1);
+    int n = snprintf(hdr, sizeof(hdr), "HTTP/1.1 204 No Content\r\nCache-Control: max-age=86400\r\nConnection: %s\r\n\r\n", conn);
+    if (!tlsWriteAll(ssl, (const uint8_t*)hdr, n)) keep = false;
     return true;
   }
   size_t len = strlen_P(PAGE);
   int n = snprintf(hdr, sizeof(hdr), "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %u\r\n"
-                   "Cache-Control: no-store\r\nConnection: close\r\n\r\n", (unsigned)len);
-  if (!tlsWriteAll(ssl, (const uint8_t*)hdr, n)) return true;
+                   "Cache-Control: no-store\r\nConnection: %s\r\n\r\n", (unsigned)len, conn);
+  if (!tlsWriteAll(ssl, (const uint8_t*)hdr, n)) { keep = false; return true; }
   // PAGE sits in memory-mapped flash; 4 KB records keep each write well inside the TLS buffer.
   for (size_t off = 0; off < len; off += 4096)
-    if (!tlsWriteAll(ssl, (const uint8_t*)PAGE + off, min((size_t)4096, len - off))) break;
+    if (!tlsWriteAll(ssl, (const uint8_t*)PAGE + off, min((size_t)4096, len - off))) { keep = false; break; }
   return true;
 }
 
-// One TLS connection: handshake, read the request head, rewrite it, relay to the dashboard.
-static void tlsServe(int fd, uint32_t peer) {
+// Case-insensitive search for a header line ("\r\nName:") within head[0, end).
+static const char* findHeader(const char* head, int end, const char* name) {
+  size_t nl = strlen(name);
+  for (const char* l = strstr(head, "\r\n"); l && l + 2 < head + end; l = strstr(l + 2, "\r\n"))
+    if (!strncasecmp(l + 2, name, nl)) return l + 2;
+  return nullptr;
+}
+
+// Between keep-alive requests: true once the browser sends its next request; false after
+// KEEPALIVE_MS of quiet, or as soon as another connection is waiting (this task serves one
+// connection at a time, so an idle keep-alive must never hold up a second tab or device).
+static const uint32_t KEEPALIVE_MS = 15000;
+static bool waitNextRequest(mbedtls_ssl_context* ssl, int fd, int ls) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < KEEPALIVE_MS) {
+    if (mbedtls_ssl_get_bytes_avail(ssl) > 0) return true;
+    fd_set rf; FD_ZERO(&rf); FD_SET(fd, &rf); FD_SET(ls, &rf);
+    timeval t = { 0, 250000 };
+    int s = select(max(fd, ls) + 1, &rf, nullptr, nullptr, &t);
+    if (s < 0) return false;
+    if (s > 0 && FD_ISSET(ls, &rf)) return false;   // someone is queued: give way
+    if (s > 0 && FD_ISSET(fd, &rf)) return true;
+  }
+  return false;
+}
+
+// One TLS connection: handshake, then one or more requests. Each request is read, rewritten
+// and relayed to the dashboard WebServer on its own loopback connection (Connection: close
+// there); the browser's connection stays open between requests when the response's length
+// is known, so the dashboard's polling doesn't pay a handshake (~1-3 s on the classic ESP32)
+// every few seconds.
+static void tlsServe(int fd, uint32_t peer, int ls) {
   static const size_t HEAD_MAX = 2048;              // a browser's request head is well under this
   static char head[HEAD_MAX + 1], out[HEAD_MAX + 160];   // tlsTask only
   static uint8_t buf[1460];
+  static char rhead[1600];                          // a response head being checked for keep-alive
   mbedtls_ssl_context& ssl = tlsSsl;               // tlsTask only
   int in = -1, r;
-  do {
-    relayAt(1);
-    if ((r = mbedtls_ssl_session_reset(&ssl))) { tlsFailNote("reset", r); break; }
-    mbedtls_ssl_set_bio(&ssl, &fd, tlsSend, tlsRecv, nullptr);
-    while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {}
-    if (r) { tlsFailNote("handshake", r); break; }  // e.g. the browser refusing the certificate until it's accepted
+  relayAt(1);
+  if ((r = mbedtls_ssl_session_reset(&ssl))) { tlsFailNote("reset", r); return; }
+  mbedtls_ssl_set_bio(&ssl, &fd, tlsSend, tlsRecv, nullptr);
+  while ((r = mbedtls_ssl_handshake(&ssl)) == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {}
+  if (r) { tlsFailNote("handshake", r); return; }   // e.g. the browser refusing the certificate until it's accepted
+
+  for (int req = 0; req < 200; req++) {
     relayAt(2);
+    if (req && !waitNextRequest(&ssl, fd, ls)) break;
     size_t len = 0; int end = -1;
     while (end < 0 && len < HEAD_MAX) {
       r = mbedtls_ssl_read(&ssl, (uint8_t*)head + len, HEAD_MAX - len);
@@ -1878,11 +1913,18 @@ static void tlsServe(int fd, uint32_t peer) {
       }
       break;
     }
+    // Keep the connection only for plain HTTP/1.1 requests without a body: with a body (an
+    // upload), the WebServer may answer before reading all of it, and leftover bytes would be
+    // taken for the next request.
+    const char* ch = findHeader(head, end, "Connection:");
+    bool keep = strstr(head, " HTTP/1.1\r\n") && !(ch && strncasecmp(ch + 11 + strspn(ch + 11, " "), "close", 5) == 0)
+                && !findHeader(head, end, "Content-Length:") && !findHeader(head, end, "Transfer-Encoding:");
+
     // The dashboard page (~25 KB) is answered here, straight from flash, instead of crossing
     // the loopback hop to the WebServer. That hop copies every chunk into short-lived ~1.5 KB
     // buffers on both sides; on the classic ESP32, with ~100 KB free, it shattered the heap
     // until no block could hold one network packet and the device dropped off the network.
-    if (tlsServeStatic(&ssl, head, end)) { relayAt(6); mbedtls_ssl_close_notify(&ssl); break; }
+    if (tlsServeStatic(&ssl, head, end, keep)) { if (keep) continue; break; }
 
     // Request line, then our headers, then the browser's minus any X-C3-Peer / Connection.
     const char* first = strstr(head, "\r\n");
@@ -1911,29 +1953,56 @@ static void tlsServe(int fd, uint32_t peer) {
 
     relayAt(5);
     // Relay both ways until the dashboard closes its side (it always does: Connection: close).
-    bool browserOpen = true; uint32_t idle = millis();
+    // Its response head is held back until complete so "Connection: close" can become
+    // keep-alive; that's only safe when it states a Content-Length.
+    bool browserOpen = true, ok = true, headDone = false; size_t rl = 0; uint32_t idle = millis();
     for (;;) {
       bool buffered = browserOpen && mbedtls_ssl_get_bytes_avail(&ssl) > 0;
       fd_set rf; FD_ZERO(&rf); FD_SET(in, &rf); if (browserOpen) FD_SET(fd, &rf);
       timeval t = { 0, 200000 };
       int s = buffered ? 1 : select(max(fd, in) + 1, &rf, nullptr, nullptr, &t);
-      if (s < 0) break;
-      if (s == 0) { if (millis() - idle > 30000) break; continue; }
+      if (s < 0) { ok = false; break; }
+      if (s == 0) { if (millis() - idle > 30000) { ok = false; break; } continue; }
       if (buffered || FD_ISSET(fd, &rf)) {          // browser -> dashboard (request body)
         r = mbedtls_ssl_read(&ssl, buf, sizeof(buf));
-        if (r > 0) { if (!sendAll(in, buf, r)) break; idle = millis(); }
-        else if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) { browserOpen = false; shutdown(in, SHUT_WR); }
+        if (r > 0) { if (!sendAll(in, buf, r)) { ok = false; break; } idle = millis(); }
+        else if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) { browserOpen = keep = false; shutdown(in, SHUT_WR); }
       }
       if (!buffered && FD_ISSET(in, &rf)) {         // dashboard -> browser
         r = recv(in, buf, sizeof(buf), 0);
-        if (r <= 0) break;                          // response complete
-        if (!tlsWriteAll(&ssl, buf, r)) break;
+        if (r < 0) { ok = false; break; }
+        if (!headDone) {
+          size_t take = r > 0 ? min((size_t)r, sizeof(rhead) - 1 - rl) : 0;
+          memcpy(rhead + rl, buf, take); rl += take; rhead[rl] = 0;
+          const char* he = strstr(rhead, "\r\n\r\n");
+          if (!he && r > 0 && rl < sizeof(rhead) - 1) { idle = millis(); continue; }
+          int hend = he ? he - rhead + 4 : -1;
+          const char* rc = hend > 0 ? findHeader(rhead, hend, "Connection:") : nullptr;
+          if (keep && hend > 0 && rc && findHeader(rhead, hend, "Content-Length:")) {
+            const char* rce = strstr(rc, "\r\n");
+            static const char KA[] = "Connection: keep-alive";
+            ok = tlsWriteAll(&ssl, (const uint8_t*)rhead, rc - rhead) && tlsWriteAll(&ssl, (const uint8_t*)KA, sizeof(KA) - 1) &&
+                 tlsWriteAll(&ssl, (const uint8_t*)rce, rl - (rce - rhead));
+          } else {
+            keep = false;
+            ok = tlsWriteAll(&ssl, (const uint8_t*)rhead, rl);
+          }
+          headDone = true;
+          if (ok && take < (size_t)r) ok = tlsWriteAll(&ssl, buf + take, r - take);
+          if (!ok || r == 0) break;
+          idle = millis();
+          continue;
+        }
+        if (r == 0) break;                          // response complete
+        if (!tlsWriteAll(&ssl, buf, r)) { ok = false; break; }
         idle = millis();
       }
     }
-    relayAt(6);
-    mbedtls_ssl_close_notify(&ssl);
-  } while (false);
+    close(in); in = -1;
+    if (!ok || !headDone || !keep) break;
+  }
+  relayAt(6);
+  mbedtls_ssl_close_notify(&ssl);
   if (in >= 0) close(in);
 }
 static void tlsTask(void* arg) {
@@ -1944,7 +2013,7 @@ static void tlsTask(void* arg) {
     if (fd < 0) { delay(100); continue; }
     timeval tv = { 5, 0 };                          // also bounds a stalled handshake
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    tlsServe(fd, from.sin_addr.s_addr);
+    tlsServe(fd, from.sin_addr.s_addr, ls);
     close(fd);
     relayAt(0);
   }
