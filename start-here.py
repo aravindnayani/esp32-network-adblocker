@@ -113,7 +113,7 @@ def parse_info(line):
     return info
 
 
-CONSOLE_CMDS = re.compile(r'^(INFO|NETS|DIAG( on| off)?)$')
+CONSOLE_CMDS = re.compile(r'^(INFO|NETS|DIAG( on| off)?|FETCH( https://[!-~]{1,300})?)$')
 
 
 def console_command(text):
@@ -121,7 +121,7 @@ def console_command(text):
     passwords only go through the WiFi form."""
     t = ' '.join(text.split())
     if not CONSOLE_CMDS.match(t):
-        raise ValueError('only INFO, NETS, DIAG, DIAG on and DIAG off can be sent from here')
+        raise ValueError('only INFO, NETS, DIAG [on|off] and FETCH [https://...] can be sent from here')
     return t + '\n'
 
 

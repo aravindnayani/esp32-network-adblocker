@@ -1658,7 +1658,11 @@ static bool fetchBlocklist(String url) {
 #ifndef UPSTREAM_PLAIN
   dotPause = 1;
   for (int i = 0; i < 40 && dotPause != 2; i++) delay(25);   // dnsTask wakes at least every 100 ms
+  Serial.printf("[remote] DNS-over-TLS %s; free heap %u, largest block %u\n", dotPause == 2 ? "paused" : "NOT paused",
+                (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
   bool ok = fetchBlocklistNow(url);
+  if (!ok) Serial.printf("[remote] after the failure: free heap %u, largest block %u, lowest ever %u\n", (unsigned)ESP.getFreeHeap(),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), (unsigned)ESP.getMinFreeHeap());
   dotPause = 3;
   return ok;
 #else
@@ -2374,12 +2378,20 @@ static void serialCommand(String line) {
     if (code != 200) { Serial.printf("[provision] error %d %s\n", code, err.c_str()); return; }
     Serial.printf("[provision] ok, restarting to join \"%s\"\n", ss.c_str());
     Serial.flush(); delay(500); ESP.restart();
+  } else if (cmd == "FETCH") {
+    // Download a blocklist now: the saved update URL, or a given https URL once (not saved).
+    // USB access already means full control of the device, so no BOOT press here.
+    if (inPortal) { Serial.println("[fetch] error not online"); return; }
+    String u = rest.length() ? rest : updateUrl;
+    if (!u.length()) { Serial.println("[fetch] error no update URL set (FETCH <https url>)"); return; }
+    fetchBlocklist(u);
+    Serial.printf("[fetch] %s\n", updateStatus.c_str());
   } else if (cmd == "DIAG") {
     diagOn = rest != "off";
     Serial.printf("[diag] %s\n", diagOn ? "on: a [health] line every 2 s (DIAG off to stop)" : "off");
     if (diagOn) healthLine("now");
   } else if (cmd.length()) {
-    Serial.printf("[cmd] unknown command %s (INFO, NETS, PROVISION, DIAG)\n", cmd.c_str());
+    Serial.printf("[cmd] unknown command %s (INFO, NETS, PROVISION, DIAG, FETCH)\n", cmd.c_str());
   }
 }
 static void pollSerial() {

@@ -153,9 +153,11 @@ class ConsoleCommands(unittest.TestCase):
         self.assertEqual(sh.console_command(' INFO '), 'INFO\n')
         self.assertEqual(sh.console_command('DIAG  on'), 'DIAG on\n')
         self.assertEqual(sh.console_command('NETS'), 'NETS\n')
+        self.assertEqual(sh.console_command('FETCH'), 'FETCH\n')
+        self.assertEqual(sh.console_command('FETCH https://example.com/b.bin'), 'FETCH https://example.com/b.bin\n')
 
     def test_refused(self):
-        for bad in ('PROVISION 41 - 61', 'info', 'DIAG maybe', 'INFO\nPROVISION 41 - 61', ''):
+        for bad in ('PROVISION 41 - 61', 'info', 'DIAG maybe', 'INFO\nPROVISION 41 - 61', '', 'FETCH http://x/b.bin', 'FETCH https://a b'):
             with self.assertRaises(ValueError, msg=bad):
                 sh.console_command(bad)
 

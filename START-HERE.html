@@ -340,7 +340,7 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
 
     <details class="card" id="con-box">
       <summary>Board console</summary>
-      <p class="note">What the board prints over USB. Useful if something goes wrong. You can send it <code>INFO</code> (status), <code>NETS</code> (WiFi it can see) or <code>DIAG</code> (a health line every 2 s; <code>DIAG off</code> stops it).</p>
+      <p class="note">What the board prints over USB. Useful if something goes wrong. You can send it <code>INFO</code> (status), <code>NETS</code> (WiFi it can see) or <code>DIAG</code> (a health line every 2 s; <code>DIAG off</code> stops it) or <code>FETCH</code> (download the blocklist now).</p>
       <pre class="log" id="console">(nothing yet)</pre>
       <div class="row">
         <input class="field" id="con-cmd" style="max-width:16em;margin:0" placeholder="INFO" spellcheck="false" autocomplete="off" aria-label="Command for the board">
@@ -661,7 +661,8 @@ python3 start-here.py</pre><button type="button" class="copy">Copy</button></div
     }
     setInterval(function () { if ($('con-box').open) pollConsole(); }, 1500);
     function sendCmd() {
-      var cmd = $('con-cmd').value.trim().toUpperCase().replace(/^DIAG (ON|OFF)$/, function (m, a) { return 'DIAG ' + a.toLowerCase(); });
+      var raw = $('con-cmd').value.trim().split(/\s+/), cmd = (raw.shift() || '').toUpperCase();
+      if (raw.length) cmd += ' ' + (cmd === 'DIAG' ? raw.join(' ').toLowerCase() : raw.join(' '));   // keep a FETCH URL as typed
       if (!cmd) return;
       if (!S.port) { $('con-msg').textContent = 'Plug the board in first.'; return; }
       api('/api/send', { port: S.port, cmd: cmd }).then(function (r) {
