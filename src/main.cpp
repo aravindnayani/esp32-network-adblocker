@@ -49,6 +49,10 @@ static const uint64_t HASH_MASK = (1ULL << (HASH_BYTES * 8)) - 1;
 // index must keep numHashes / INDEX_ENTRIES under MAX_RANGE or lookups miss entries.
 #if CONFIG_IDF_TARGET_ESP32S3
 static const int INDEX_ENTRIES = 16384;  // 80 KB; 8 MB flash holds ~1M hashes (~64/bucket), fine to ~4M
+#elif CONFIG_IDF_TARGET_ESP32
+// 10 KB. The classic ESP32 has the least free RAM of the three (two TLS sessions take ~70 KB
+// of ~130 KB), and its 4 MB layout holds at most ~265k hashes: ~130 per bucket, under MAX_RANGE.
+static const int INDEX_ENTRIES = 2048;
 #else
 static const int INDEX_ENTRIES = 4096;   // 20 KB; fine up to ~1M hashes, 4 MB flash holds far fewer
 #endif
@@ -59,6 +63,7 @@ static const int MAX_RANGE = 256;        // max hashes per index bucket
 // Health markers, read by healthTask (see "health" below). Written without locks: each is
 // one aligned word, and a stale read only makes a diagnostic line a moment out of date.
 volatile uint32_t loopBeat = 0, dnsBeat = 0;            // millis() when loop() / dnsTask last ran
+static TaskHandle_t dnsTaskH = nullptr, tlsTaskH = nullptr, loopTaskH = nullptr;   // for stack high-water marks
 volatile uint8_t  relayStage = 0;                       // what tlsTask is doing (RELAY_STAGES)
 volatile uint32_t relayStageSince = 0;
 static const char* const RELAY_STAGES[] = { "idle", "handshake", "read-request", "connect-inner", "send-inner", "relay", "close" };
@@ -905,7 +910,7 @@ static bool startDns() {
   if (dnsSock < 0 || !upstreamInit()) return false;
   // Stack is in bytes; lookups read flash through LittleFS, and a DNS-over-TLS handshake
   // (ECDHE + certificate checks) runs in this task too.
-  return xTaskCreate(dnsTask, "dns", 12288, nullptr, 3, nullptr) == pdPASS;
+  return xTaskCreate(dnsTask, "dns", 12288, nullptr, 3, &dnsTaskH) == pdPASS;
 }
 
 // ---------- web ----------
@@ -1845,7 +1850,7 @@ static bool tlsServeStatic(mbedtls_ssl_context* ssl, const char* head, int end) 
 
 // One TLS connection: handshake, read the request head, rewrite it, relay to the dashboard.
 static void tlsServe(int fd, uint32_t peer) {
-  static const size_t HEAD_MAX = 4096;
+  static const size_t HEAD_MAX = 2048;              // a browser's request head is well under this
   static char head[HEAD_MAX + 1], out[HEAD_MAX + 160];   // tlsTask only
   static uint8_t buf[1460];
   mbedtls_ssl_context& ssl = tlsSsl;               // tlsTask only
@@ -1937,7 +1942,7 @@ static void tlsTask(void* arg) {
     sockaddr_in from; socklen_t fl = sizeof(from);
     int fd = accept(ls, (sockaddr*)&from, &fl);
     if (fd < 0) { delay(100); continue; }
-    timeval tv = { 10, 0 };
+    timeval tv = { 5, 0 };                          // also bounds a stalled handshake
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     tlsServe(fd, from.sin_addr.s_addr);
     close(fd);
@@ -1959,9 +1964,11 @@ static bool startHttps() {
   if (ls < 0) return false;
   setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
   sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons(443); a.sin_addr.s_addr = htonl(INADDR_ANY);
-  if (bind(ls, (sockaddr*)&a, sizeof(a)) || listen(ls, 4)) { close(ls); return false; }
+  if (bind(ls, (sockaddr*)&a, sizeof(a)) || listen(ls, 2)) { close(ls); return false; }
+  // Backlog 2: each queued connection pins the WiFi receive buffers (~1.6 KB each) holding
+  // its ClientHello until it's served, and browsers open several at once.
   // Stack: the ECDHE/ECDSA handshake needs a few KB of mbedtls stack on top of the relay.
-  return xTaskCreate(tlsTask, "https", 10240, (void*)(intptr_t)ls, 2, nullptr) == pdPASS;
+  return xTaskCreate(tlsTask, "https", 10240, (void*)(intptr_t)ls, 2, &tlsTaskH) == pdPASS;
 }
 // :80 only redirects to https, to the same name if it's one of ours, else to our IP.
 static void handleRedirect() {
@@ -2181,12 +2188,16 @@ static String hexEncode(const String& s) {
 static volatile bool diagOn = false;
 static void healthLine(const char* why) {
   uint32_t now = millis();
-  Serial.printf("[health] %s up=%lus heap=%u min=%u maxblock=%u loop=%lums dns=%lums relay=%s/%lus wifi=%d rssi=%d\n",
+  Serial.printf("[health] %s up=%lus heap=%u min=%u maxblock=%u loop=%lums dns=%lums relay=%s/%lus wifi=%d rssi=%d"
+                " stackfree=dns:%u,https:%u,loop:%u\n",
                 why, (unsigned long)(now / 1000), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                 (unsigned long)(loopBeat ? now - loopBeat : 0), (unsigned long)(dnsBeat ? now - dnsBeat : 0),
                 RELAY_STAGES[relayStage < 7 ? relayStage : 0], (unsigned long)((now - relayStageSince) / 1000),
-                (int)WiFi.status(), (int)WiFi.RSSI());
+                (int)WiFi.status(), (int)WiFi.RSSI(),
+                dnsTaskH ? (unsigned)uxTaskGetStackHighWaterMark(dnsTaskH) : 0,
+                tlsTaskH ? (unsigned)uxTaskGetStackHighWaterMark(tlsTaskH) : 0,
+                loopTaskH ? (unsigned)uxTaskGetStackHighWaterMark(loopTaskH) : 0);
 }
 static void healthTask(void*) {
   uint32_t lastAuto = 0;
@@ -2409,6 +2420,7 @@ void setup() {
 }
 
 void loop() {
+  if (!loopTaskH) loopTaskH = xTaskGetCurrentTaskHandle();
   loopBeat = millis();
   confirmLoop();
   pollSerial();                           // INFO over USB (start-here.py finds the IP this way)
